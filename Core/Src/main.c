@@ -21,6 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "UNER.h"     // tu librería principal
 
 
 /* USER CODE END Includes */
@@ -49,6 +50,9 @@ UART_HandleTypeDef huart1;
 uint32_t is10ms, tmo100ms;
 
 uint8_t dataTx, dataRx;
+
+static uint16_t counter = 0;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -77,6 +81,25 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 	}
 }
 
+// Implementación de funciones necesarias para el ESP01
+void DoCHPD(uint8_t enable) {
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, enable ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
+
+int WriteUSARTByte(uint8_t byte) {
+    return (HAL_UART_Transmit(&huart1, &byte, 1, 100) == HAL_OK) ? 1 : 0;
+}
+
+void WriteToBuf(uint8_t b) {
+    ESP01_WriteRX(b); // Usa el buffer interno del driver
+}
+
+// Instancia del handle
+static _sESP01Handle esp01Handle = {
+    .DoCHPD = DoCHPD,
+    .WriteUSARTByte = WriteUSARTByte,
+    .WriteByteToBufRX = WriteToBuf
+};
 
 /* USER CODE END 0 */
 
@@ -118,9 +141,19 @@ int main(void)
 
   tmo100ms = 10;
   is10ms = 0;
-
   dataTx = 0;
+
+  // 🔹 Inicializar el ESP01
+  ESP01_Init(&esp01Handle);
+
+  // 🔹 Conectarse al WiFi (ya lo tenés configurado así)
+  ESP01_SetWIFI("MEGACABLE FIBRA-2.4G-ckd0", "djg19dlk");
+
+  // 🔹 Ahora iniciás la conexión UDP con tu PC (Hercules)
+  ESP01_StartUDP("172.23.205.98", 30000, 30001);
+
   /* USER CODE END 2 */
+
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
@@ -129,19 +162,36 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  if(is10ms) {
-	  		is10ms = 0;
-	  		tmo100ms--;
-	  		if(tmo100ms == 0) {
-	  			tmo100ms = 10; // 10 * 10 ms = 100 ms
-	  			HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin); // ✅ Cambia el estado del LED
-	  		}
-	  	}
+	  if (is10ms) {
+	      is10ms = 0;
+	      ESP01_Timeout10ms();  // Requerido por la librería ESP01
+
+	      tmo100ms--;
+	      if (tmo100ms == 0) {
+	          tmo100ms = 10;
+	          HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin); // Blink LED
+	      }
+
+	      // Enviar "HOLA\r\n" cada 2 segundos
+	      counter++;
+	      if (counter >= 200) { // 200 * 10 ms = 2000 ms = 2 seg
+	          counter = 0;
+
+	          if (ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED) {
+	              const char msg[] = "HOLA\r\n";
+	              ESP01_Send((uint8_t*)msg, 0, sizeof(msg) - 1, sizeof(msg) - 1);
+	          }
+	      }
+	  }
+
+	  ESP01_Task(); // Siempre llamar
+
 
 	  if (dataTx) {
-	  	HAL_UART_Transmit(&huart1, &dataTx, 1, 100); // 100 ms timeout
-	  	dataTx = 0;
+	      HAL_UART_Transmit(&huart1, &dataTx, 1, 100);
+	      dataTx = 0;
 	  }
+
 
   }
   /* USER CODE END 3 */
@@ -281,10 +331,12 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_USART1_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(CH_PD_de_ESP01_GPIO_Port, CH_PD_de_ESP01_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin : LED_Pin */
   GPIO_InitStruct.Pin = LED_Pin;
@@ -293,23 +345,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LED_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PA0 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-
-  /* USART1 GPIO Configuration: PA9 -> TX, PA10 -> RX */
-  GPIO_InitStruct.Pin = GPIO_PIN_9;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  GPIO_InitStruct.Pin = GPIO_PIN_10;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  /*Configure GPIO pin : CH_PD_de_ESP01_Pin */
+  GPIO_InitStruct.Pin = CH_PD_de_ESP01_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(CH_PD_de_ESP01_GPIO_Port, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
