@@ -1,0 +1,34 @@
+# STM32CubeIDE
+.settings/
+.project
+.cproject
+.metadata/
+.idea/
+*.launch
+
+# Archivos de compilación
+Debug/
+Release/
+*.o
+*.d
+*.elf
+*.bin
+*.hex
+*.map
+*.lst
+*.axf
+
+# Logs y backups
+*.log
+*.bak
+*.tmp
+*.swp
+*~
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# CubeMX
+*.ioc
+MX_*/
