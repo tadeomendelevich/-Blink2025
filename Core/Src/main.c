@@ -21,7 +21,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "UNER.h"     // tu librería principal
+#include "UNER.h"
+#include <stdio.h>
 
 
 /* USER CODE END Includes */
@@ -45,6 +46,12 @@
 TIM_HandleTypeDef htim1;
 
 UART_HandleTypeDef huart1;
+UART_HandleTypeDef huart2;
+
+int __io_putchar(int ch) {
+    HAL_UART_Transmit(&huart2, (uint8_t*)&ch, 1, HAL_MAX_DELAY);
+    return ch;
+}
 
 /* USER CODE BEGIN PV */
 uint32_t is10ms, tmo100ms;
@@ -60,6 +67,7 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_USART1_UART_Init(void);
+static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -76,10 +84,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 	if(huart->Instance == USART1) {
+		printf("UART1 RX: %c (0x%02X)\n", dataRx, dataRx);
 		dataTx = dataRx + 1;
 		HAL_UART_Receive_IT(&huart1, &dataRx, 1);
 	}
 }
+
 
 // Implementación de funciones necesarias para el ESP01
 void DoCHPD(uint8_t enable) {
@@ -134,6 +144,7 @@ int main(void)
   MX_GPIO_Init();
   MX_TIM1_Init();
   MX_USART1_UART_Init();
+  MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
 
   HAL_TIM_Base_Start_IT(&htim1);
@@ -146,14 +157,15 @@ int main(void)
   // 🔹 Inicializar el ESP01
   ESP01_Init(&esp01Handle);
 
+  ESP01_AttachDebugStr((void (*)(const char *))printf);
+
   // 🔹 Conectarse al WiFi (ya lo tenés configurado así)
   ESP01_SetWIFI("MEGACABLE FIBRA-2.4G-ckd0", "djg19dlk");
 
   // 🔹 Ahora iniciás la conexión UDP con tu PC (Hercules)
-  ESP01_StartUDP("172.23.205.98", 30000, 30001);
+  ESP01_StartUDP("192.168.100.5", 30000, 30001);
 
   /* USER CODE END 2 */
-
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
@@ -312,6 +324,39 @@ static void MX_USART1_UART_Init(void)
   /* USER CODE BEGIN USART1_Init 2 */
 
   /* USER CODE END USART1_Init 2 */
+
+}
+
+/**
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART2_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART2_Init 0 */
+
+  /* USER CODE END USART2_Init 0 */
+
+  /* USER CODE BEGIN USART2_Init 1 */
+
+  /* USER CODE END USART2_Init 1 */
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART2_Init 2 */
+
+  /* USER CODE END USART2_Init 2 */
 
 }
 

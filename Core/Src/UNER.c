@@ -430,73 +430,87 @@ static void ESP01ATDecode(){
 			if(value == '\n'){
 				esp01HState = 0;
 				switch(indexResponse){
-				case 0://AT
-				case 1:
-					break;
-				case 2://OK
-					if(esp01ATSate == ESP01ATRESPONSE){
-						esp01TimeoutTask = 0;
-						esp01Flags.bit.ATRESPONSEOK = 1;
-					}
-					break;
-				case 3://ERROR
-					if(esp01Flags.bit.SENDINGDATA){
-						esp01Flags.bit.SENDINGDATA = 0;
-						esp01Flags.bit.UDPTCPCONNECTED = 0;
-						esp01irTX = esp01iwTX;
-					}
-					break;
-				case 4://WIFI GOT IP
-					esp01TimeoutTask = 0;
-					if(esp01ATSate == ESP01CWJAPRESPONSE)
-						esp01Flags.bit.ATRESPONSEOK = 1;
-					esp01Flags.bit.WIFICONNECTED = 1;
-					if(ESP01ChangeState != NULL)
-						ESP01ChangeState(ESP01_WIFI_CONNECTED);
-					break;
-				case 5://WIFI CONNECTED
-					break;
-				case 6://WIFI DISCONNECT
-				case 7://WIFI DISCONNECTED
-					esp01Flags.bit.UDPTCPCONNECTED = 0;
-					esp01Flags.bit.WIFICONNECTED = 0;
-					if(ESP01ChangeState != NULL)
-						ESP01ChangeState(ESP01_WIFI_DISCONNECTED);
-					if(esp01ATSate == ESP01CWJAPRESPONSE)
-						break;
-					esp01ATSate = ESP01ATHARDRSTSTOP;
-					break;
-				case 8://DISCONNECTED
-					esp01Flags.bit.UDPTCPCONNECTED = 0;
-					break;
-				case 9://SEND OK
-					esp01Flags.bit.SENDINGDATA = 0;
-					if(ESP01ChangeState != NULL)
-						ESP01ChangeState(ESP01_SEND_OK);
-					break;
-				case 10://CONNECT
-					esp01TimeoutTask = 0;
-					esp01Flags.bit.ATRESPONSEOK = 1;
-					esp01Flags.bit.UDPTCPCONNECTED = 1;
-					if(ESP01ChangeState != NULL)
-						ESP01ChangeState(ESP01_UDPTCP_CONNECTED);
-					break;
-				case 11://CLOSED
-					esp01Flags.bit.UDPTCPCONNECTED = 0;
-					break;
-				case 13://busy
-					esp01Flags.bit.UDPTCPCONNECTED = 0;
-					esp01Flags.bit.WIFICONNECTED = 0;
-					break;
-				case 15://ready
-					esp01Flags.bit.UDPTCPCONNECTED = 0;
-					esp01Flags.bit.WIFICONNECTED = 0;
-					esp01ATSate = ESP01ATHARDRSTSTOP;
-					break;
-				case 16://busy p
-					break;
-				case 17://busy s
-					break;
+				    case 0://AT
+				    case 1:
+				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: AT");
+				        break;
+				    case 2://OK
+				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: OK");
+				        if(esp01ATSate == ESP01ATRESPONSE){
+				            esp01TimeoutTask = 0;
+				            esp01Flags.bit.ATRESPONSEOK = 1;
+				        }
+				        break;
+				    case 3://ERROR
+				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: ERROR");
+				        if(esp01Flags.bit.SENDINGDATA){
+				            esp01Flags.bit.SENDINGDATA = 0;
+				            esp01Flags.bit.UDPTCPCONNECTED = 0;
+				            esp01irTX = esp01iwTX;
+				        }
+				        break;
+				    case 4://WIFI GOT IP
+				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: WIFI GOT IP");
+				        esp01TimeoutTask = 0;
+				        if(esp01ATSate == ESP01CWJAPRESPONSE)
+				            esp01Flags.bit.ATRESPONSEOK = 1;
+				        esp01Flags.bit.WIFICONNECTED = 1;
+				        if(ESP01ChangeState != NULL)
+				            ESP01ChangeState(ESP01_WIFI_CONNECTED);
+				        break;
+				    case 5://WIFI CONNECTED
+				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: WIFI CONNECTED");
+				        break;
+				    case 6://WIFI DISCONNECT
+				    case 7://WIFI DISCONNECTED
+				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: WIFI DISCONNECT/DISCONNECTED");
+				        esp01Flags.bit.UDPTCPCONNECTED = 0;
+				        esp01Flags.bit.WIFICONNECTED = 0;
+				        if(ESP01ChangeState != NULL)
+				            ESP01ChangeState(ESP01_WIFI_DISCONNECTED);
+				        if(esp01ATSate == ESP01CWJAPRESPONSE)
+				            break;
+				        esp01ATSate = ESP01ATHARDRSTSTOP;
+				        break;
+				    case 8://DISCONNECTED
+				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: DISCONNECTED");
+				        esp01Flags.bit.UDPTCPCONNECTED = 0;
+				        break;
+				    case 9://SEND OK
+				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: SEND OK");
+				        esp01Flags.bit.SENDINGDATA = 0;
+				        if(ESP01ChangeState != NULL)
+				            ESP01ChangeState(ESP01_SEND_OK);
+				        break;
+				    case 10://CONNECT
+				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: CONNECT");
+				        esp01TimeoutTask = 0;
+				        esp01Flags.bit.ATRESPONSEOK = 1;
+				        esp01Flags.bit.UDPTCPCONNECTED = 1;
+				        if(ESP01ChangeState != NULL)
+				            ESP01ChangeState(ESP01_UDPTCP_CONNECTED);
+				        break;
+				    case 11://CLOSED
+				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: CLOSED");
+				        esp01Flags.bit.UDPTCPCONNECTED = 0;
+				        break;
+				    case 13://busy
+				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: BUSY");
+				        esp01Flags.bit.UDPTCPCONNECTED = 0;
+				        esp01Flags.bit.WIFICONNECTED = 0;
+				        break;
+				    case 15://ready
+				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: READY");
+				        esp01Flags.bit.UDPTCPCONNECTED = 0;
+				        esp01Flags.bit.WIFICONNECTED = 0;
+				        esp01ATSate = ESP01ATHARDRSTSTOP;
+				        break;
+				    case 16://busy p
+				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: BUSY P");
+				        break;
+				    case 17://busy s
+				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: BUSY S");
+				        break;
 				}
 			}
 			break;

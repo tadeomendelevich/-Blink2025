@@ -14,7 +14,7 @@
 ../Core/Src/UNER.c:337:6:ESP01_AttachDebugStr	16	static
 ../Core/Src/UNER.c:341:5:ESP01_IsHDRRST	4	static
 ../Core/Src/UNER.c:351:13:ESP01ATDecode	16	static
-../Core/Src/UNER.c:588:13:ESP01DOConnection	8	static
-../Core/Src/UNER.c:750:13:ESP01SENDData	16	static
-../Core/Src/UNER.c:783:13:ESP01StrToBufTX	24	static
-../Core/Src/UNER.c:791:13:ESP01ByteToBufTX	16	static
+../Core/Src/UNER.c:602:13:ESP01DOConnection	8	static
+../Core/Src/UNER.c:764:13:ESP01SENDData	16	static
+../Core/Src/UNER.c:797:13:ESP01StrToBufTX	24	static
+../Core/Src/UNER.c:805:13:ESP01ByteToBufTX	16	static
