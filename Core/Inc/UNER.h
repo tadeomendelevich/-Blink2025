@@ -23,6 +23,61 @@
 #define UNER_H_
 
 #include <stdint.h>
+#include <stdbool.h>
+
+#define ESP01RXBUFAT		128
+#define ESP01TXBUFAT		256
+#define RXBUFSIZE       	256
+#define TXBUFSIZE       	256
+
+// Estructura para la recepción de datos
+typedef struct {
+    volatile uint8_t *buff;
+    uint8_t indexR;
+    uint8_t indexW;
+    uint8_t indexData;
+    uint8_t nBytes;
+    uint8_t header;
+    uint8_t chk;
+    uint8_t mask;
+    bool isComannd;
+    uint8_t timeOut;
+} _sRx;
+
+// Estructura para la transmisión de datos
+typedef struct {
+    uint8_t *buff;
+    uint8_t indexR;
+    uint8_t indexW;
+    uint8_t mask;
+    uint8_t chk;
+} _sTx;
+
+// Enums para el estado de parsing
+enum { HEADER_U, HEADER_N, HEADER_E, HEADER_R, NBYTES, TOKEN, PAYLOAD };
+
+// Comandos UNER (usar los mismos ID que en tu implementación Visual Studio)
+typedef enum {
+    ALIVE = 0xA0,
+    FIRMWARE,
+    LEDSTATUS,
+    BUTTONSTATUS,
+    ANALOGSENSORS,
+    SETBLACKCOLOR,
+    SETWHITECOLOR,
+    SETLINESPEED,
+    MOTORTEST,
+    SERVOANGLE,
+    CONFIGSERVO,
+    GETDISTANCE,
+    GETSPEED,
+    SENDALLSENSORS,
+    RADAR,
+    SW0,
+    UNKNOWN = 0xFE,
+    ACK = 0xF0,
+    SERVOFINISHMOVE = 0xF1
+} _eCmd;
 
 /**< Estados ESP01 */
 typedef enum{
@@ -41,11 +96,6 @@ typedef enum{
 	ESP01_SEND_ERROR,
 } _eESP01STATUS;
 
-
-#define ESP01RXBUFAT		128
-#define ESP01TXBUFAT		256
-
-
 /**< Inicializa el driver ESP01 UDP */
 typedef struct{
 	void (*DoCHPD)(uint8_t value);			    /**< Puntero a una función que permite manejar el pin CH_PD del ESP01 */
@@ -55,7 +105,6 @@ typedef struct{
 //	uint16_t			*iwRX;				    /**< Puntero al índice de escritura del buffer de recepción circular */
 //	uint16_t			sizeBufferRX;		  	/**< Tamaño en bytes del buffer de recepción*/
 } _sESP01Handle;
-
 
 /**
  * @brief ESP01_WIFI Configura y Conecta
@@ -236,6 +285,12 @@ void ESP01_AttachDebugStr(void (*aESP01DbgStr)(const char *dbgStr));
  *
  */
 int ESP01_IsHDRRST();
+
+void UNER_Init(_sRx *rx, _sTx *tx);
+void UNER_PushByte(uint8_t byte);
+void UNER_Task(void);
+void UNER_Send(uint8_t cmd, const uint8_t *payload, uint8_t length);
+void decodeCommand(_sRx *dataRx, _sTx *dataTx);
 
 
 #endif /* ESP01_H_ */

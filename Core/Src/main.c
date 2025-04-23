@@ -23,6 +23,7 @@
 /* USER CODE BEGIN Includes */
 #include "UNER.h"
 #include <stdio.h>
+#include <string.h>
 
 
 /* USER CODE END Includes */
@@ -48,10 +49,10 @@ TIM_HandleTypeDef htim1;
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 
-int __io_putchar(int ch) {
-    HAL_UART_Transmit(&huart2, (uint8_t*)&ch, 1, HAL_MAX_DELAY);
-    return ch;
-}
+//int __io_putchar(int ch) {
+//	HAL_UART_Transmit(&huart2, (uint8_t*)&ch, 1, HAL_MAX_DELAY);
+//	return ch;
+//}
 
 /* USER CODE BEGIN PV */
 uint32_t is10ms, tmo100ms;
@@ -60,6 +61,10 @@ uint8_t dataTx, dataRx;
 
 static uint16_t counter = 0;
 
+uint8_t unerRxBuffer[RXBUFSIZE];	// Buffer de recepcion protoclo UNER
+uint8_t unerTxBuffer[TXBUFSIZE];	// Buffer de transmision protocolo UNER
+_sRx unerRx;	// Indice de lectura recepcion
+_sTx unerTx;	// Indice de escritura transmision
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -83,11 +88,11 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 }
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-	if(huart->Instance == USART1) {
-		printf("UART1 RX: %c (0x%02X)\n", dataRx, dataRx);
-		dataTx = dataRx + 1;
-		HAL_UART_Receive_IT(&huart1, &dataRx, 1);
-	}
+    if (huart->Instance == USART1) {
+        ESP01_WriteRX(dataRx);    // ESP01 pueda leer respuestas AT
+        UNER_PushByte(dataRx);    // UNER reciba comandos de Qt/PC
+        HAL_UART_Receive_IT(&huart1, &dataRx, 1);
+    }
 }
 
 
@@ -162,8 +167,24 @@ int main(void)
   // 🔹 Conectarse al WiFi (ya lo tenés configurado así)
   ESP01_SetWIFI("MEGACABLE FIBRA-2.4G-ckd0", "djg19dlk");
 
+  if (ESP01_StateWIFI() != ESP01_WIFI_CONNECTED) {
+      char wifiMsg[] = "No conectado al WiFi\r\n";
+      HAL_UART_Transmit(&huart2, (uint8_t*)wifiMsg, strlen(wifiMsg), 100);
+  }
+
+
   // 🔹 Ahora iniciás la conexión UDP con tu PC (Hercules)
-  ESP01_StartUDP("192.168.100.5", 30000, 30001);
+  ESP01_StartUDP("192.168.100.5", 30000, 30010);
+
+  if (ESP01_StateUDPTCP() != ESP01_UDPTCP_CONNECTED) {
+      char udpMsg[] = "Fallo en conexion UDP\r\n";
+      HAL_UART_Transmit(&huart2, (uint8_t*)udpMsg, strlen(udpMsg), 100);
+  }
+
+  unerRx.buff = unerRxBuffer;
+  unerTx.buff = unerTxBuffer;
+  UNER_Init(&unerRx, &unerTx);
+
 
   /* USER CODE END 2 */
 
@@ -190,14 +211,27 @@ int main(void)
 	          counter = 0;
 
 	          if (ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED) {
+	              char debugMsg[] = "ESP01 UDP conectado\r\n";
+	              HAL_UART_Transmit(&huart2, (uint8_t*)debugMsg, strlen(debugMsg), 100);
+
 	              const char msg[] = "HOLA\r\n";
 	              ESP01_Send((uint8_t*)msg, 0, sizeof(msg) - 1, sizeof(msg) - 1);
+	          } else {
+	              char debugMsg[] = "ESP01 aún no conectado\r\n";
+	              HAL_UART_Transmit(&huart2, (uint8_t*)debugMsg, strlen(debugMsg), 100);
 	          }
 	      }
+
+
 	  }
 
-	  ESP01_Task(); // Siempre llamar
+	  ESP01_Task(); // Procesa tramas ESP01 recibidas
+	  UNER_Task(); // Procesa tramas UNER recibidas
 
+	  while (unerTx.indexR != unerTx.indexW) {
+	      HAL_UART_Transmit(&huart1, &unerTx.buff[unerTx.indexR++], 1, 100);
+	      unerTx.indexR &= unerTx.mask;
+	  }
 
 	  if (dataTx) {
 	      HAL_UART_Transmit(&huart1, &dataTx, 1, 100);
