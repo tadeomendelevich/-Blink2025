@@ -10,6 +10,7 @@
 #include <string.h>
 #include <stdlib.h>
 
+const char *firmware = "UNER V1.0";
 static _sRx *unerRx;
 static _sTx *unerTx;
 
@@ -927,29 +928,66 @@ void UNER_Send(uint8_t cmd, const uint8_t *payload, uint8_t length) {
     unerTx->indexW &= unerTx->mask;
 }
 
-void decodeCommand(_sRx *dataRx, _sTx *dataTx) {
-    uint8_t cmd = dataRx->buff[dataRx->indexData];
-    switch (cmd) {
-		case ALIVE:
-			uint8_t payload[] = { ACK };
-			UNER_Send(ALIVE, payload, 1);  // Buffer local (UART)
+uint8_t putHeaderOnTx(_sTx  *dataTx, _eCmd ID, uint8_t frameLength)
+{
+    dataTx->chk = 0;
+    dataTx->buff[dataTx->indexW++]='U';
+    dataTx->indexW &= dataTx->mask;
+    dataTx->buff[dataTx->indexW++]='N';
+    dataTx->indexW &= dataTx->mask;
+    dataTx->buff[dataTx->indexW++]='E';
+    dataTx->indexW &= dataTx->mask;
+    dataTx->buff[dataTx->indexW++]='R';
+    dataTx->indexW &= dataTx->mask;
+    dataTx->buff[dataTx->indexW++]=frameLength+1;
+    dataTx->indexW &= dataTx->mask;
+    dataTx->buff[dataTx->indexW++]=':';
+    dataTx->indexW &= dataTx->mask;
+    dataTx->buff[dataTx->indexW++]=ID;
+    dataTx->indexW &= dataTx->mask;
+    dataTx->chk ^= (frameLength+1);
+    dataTx->chk ^= ('U' ^'N' ^'E' ^'R' ^ID ^':') ;
+    return  dataTx->chk;
+}
 
-			if (ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED) {
-				uint8_t respuesta[6] = { 'U','N','E','R', 2, ':', ALIVE, ACK };
-				uint8_t chk = 'U' ^ 'N' ^ 'E' ^ 'R' ^ 2 ^ ':' ^ ALIVE ^ ACK;
-				ESP01_Send(respuesta, 0, 8, 8);  // Manda trama completa incluyendo checksum
-			}
-			break;
-        case FIRMWARE: {
-            const char fw[] = "STM32-UNER-v1\n";
-            UNER_Send(FIRMWARE, (const uint8_t *)fw, sizeof(fw)-1);
-            break;
-        }
-        default:
-            UNER_Send(cmd, (uint8_t[]){UNKNOWN}, 1);
-            break;
+uint8_t putByteOnTx(_sTx *dataTx, uint8_t byte)
+{
+    dataTx->buff[dataTx->indexW++]=byte;
+    dataTx->indexW &= dataTx->mask;
+    dataTx->chk ^= byte;
+    return dataTx->chk;
+}
+
+uint8_t putStrOntx(_sTx *dataTx, const char *str)
+{
+    globalIndex=0;
+    while(str[globalIndex]){
+        dataTx->buff[dataTx->indexW++]=str[globalIndex];
+        dataTx->indexW &= dataTx->mask;
+        dataTx->chk ^= str[globalIndex++];
     }
-    dataRx->isComannd = false;
+    return dataTx->chk ;
+}
+
+void decodeCommand(_sRx *dataRx, _sTx *dataTx)
+{
+    switch(dataRx->buff[dataRx->indexData]){
+        case ALIVE:
+            putHeaderOnTx(dataTx, ALIVE, 2);
+            putByteOnTx(dataTx, ACK );
+            putByteOnTx(dataTx, dataTx->chk);
+        break;
+        case FIRMWARE:
+            putHeaderOnTx(dataTx, FIRMWARE, 12);
+            putStrOntx(dataTx, firmware);
+            putByteOnTx(dataTx, dataTx->chk);
+        break;
+        default:
+            putHeaderOnTx(dataTx, (_eCmd)dataRx->buff[dataRx->indexData], 2);
+            putByteOnTx(dataTx,UNKNOWN );
+            putByteOnTx(dataTx, dataTx->chk);
+        break;
+    }
 }
 
 

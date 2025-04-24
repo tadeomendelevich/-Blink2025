@@ -18,7 +18,8 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-
+#include "usb_device.h"
+#include "usbd_cdc_if.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "UNER.h"
@@ -49,12 +50,9 @@ TIM_HandleTypeDef htim1;
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 
-//int __io_putchar(int ch) {
-//	HAL_UART_Transmit(&huart2, (uint8_t*)&ch, 1, HAL_MAX_DELAY);
-//	return ch;
-//}
-
 /* USER CODE BEGIN PV */
+uint8_t BufUSBTx[256], nBytesTx;
+
 uint32_t is10ms, tmo100ms;
 
 uint8_t dataTx, dataRx;
@@ -65,6 +63,9 @@ uint8_t unerRxBuffer[RXBUFSIZE];	// Buffer de recepcion protoclo UNER
 uint8_t unerTxBuffer[TXBUFSIZE];	// Buffer de transmision protocolo UNER
 _sRx unerRx;	// Indice de lectura recepcion
 _sTx unerTx;	// Indice de escritura transmision
+
+uint8_t globalIndex;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -74,11 +75,23 @@ static void MX_TIM1_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
-
+void USBRxData(uint8_t *buf, int len);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+void USBRxData(uint8_t *buf, int len) {
+	BufUSBTx[0] = 'U';
+	BufUSBTx[1] = 'S';
+	BufUSBTx[2] = 'B';
+	BufUSBTx[3] = ' ';
+
+	for(nBytesTx = 0; nBytesTx < len; nBytesTx++) {
+		BufUSBTx[nBytesTx+4] = buf[nBytesTx];
+	}
+
+	nBytesTx += 4;
+}
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 	if(htim->Instance == TIM1){
@@ -150,7 +163,10 @@ int main(void)
   MX_TIM1_Init();
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
+  MX_USB_DEVICE_Init();
   /* USER CODE BEGIN 2 */
+  CDC_Attach_Rx(USBRxData);
+  nBytesTx = 0;
 
   HAL_TIM_Base_Start_IT(&htim1);
   HAL_UART_Receive_IT(&huart1, &dataRx, 1);
@@ -228,16 +244,28 @@ int main(void)
 	  ESP01_Task(); // Procesa tramas ESP01 recibidas
 	  UNER_Task(); // Procesa tramas UNER recibidas
 
-	  while (unerTx.indexR != unerTx.indexW) {
-	      HAL_UART_Transmit(&huart1, &unerTx.buff[unerTx.indexR++], 1, 100);
-	      unerTx.indexR &= unerTx.mask;
+	  if (unerTx.indexR != unerTx.indexW && ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED) {
+	      uint8_t dataToSend[TXBUFSIZE];
+	      uint16_t i = 0;
+
+	      while (unerTx.indexR != unerTx.indexW && i < sizeof(dataToSend)) {
+	          dataToSend[i++] = unerTx.buff[unerTx.indexR++];
+	          unerTx.indexR &= unerTx.mask;
+	      }
+
+	      if (i > 0) {
+	          ESP01_Send(dataToSend, 0, i, i);
+	      }
 	  }
+
 
 	  if (dataTx) {
 	      HAL_UART_Transmit(&huart1, &dataTx, 1, 100);
 	      dataTx = 0;
 	  }
 
+	  if(CDC_Transmit_FS(BufUSBTx, nBytesTx) == USBD_OK)
+		  nBytesTx = 0;
 
   }
   /* USER CODE END 3 */
@@ -251,6 +279,7 @@ void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
@@ -277,6 +306,12 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
   if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USB;
+  PeriphClkInit.UsbClockSelection = RCC_USBCLKSOURCE_PLL_DIV1_5;
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {
     Error_Handler();
   }

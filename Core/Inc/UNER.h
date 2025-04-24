@@ -30,6 +30,8 @@
 #define RXBUFSIZE       	256
 #define TXBUFSIZE       	256
 
+extern uint8_t globalIndex;
+
 // Estructura para la recepción de datos
 typedef struct {
     volatile uint8_t *buff;
@@ -105,6 +107,7 @@ typedef struct{
 //	uint16_t			*iwRX;				    /**< Puntero al índice de escritura del buffer de recepción circular */
 //	uint16_t			sizeBufferRX;		  	/**< Tamaño en bytes del buffer de recepción*/
 } _sESP01Handle;
+
 
 /**
  * @brief ESP01_WIFI Configura y Conecta
@@ -290,6 +293,9 @@ void UNER_Init(_sRx *rx, _sTx *tx);
 void UNER_PushByte(uint8_t byte);
 void UNER_Task(void);
 void UNER_Send(uint8_t cmd, const uint8_t *payload, uint8_t length);
+uint8_t putHeaderOnTx(_sTx  *dataTx, _eCmd ID, uint8_t frameLength);
+uint8_t putByteOnTx(_sTx *dataTx, uint8_t byte);
+uint8_t putStrOntx(_sTx *dataTx, const char *str);
 void decodeCommand(_sRx *dataRx, _sTx *dataTx);
 
 
