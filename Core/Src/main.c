@@ -4,7 +4,7 @@
   * @file           : main.c
   * @brief          : Main program body
   ******************************************************************************
-  * @attention
+  * @attention TADEO MENDELEVICH
   *
   * Copyright (c) 2025 STMicroelectronics.
   * All rights reserved.
@@ -180,17 +180,24 @@ int main(void)
 
   ESP01_AttachDebugStr((void (*)(const char *))printf);
 
-  // 🔹 Conectarse al WiFi (ya lo tenés configurado así)
+  // 🔹 Conectarse al WiFi
   ESP01_SetWIFI("MEGACABLE FIBRA-2.4G-ckd0", "djg19dlk");
 
+  if (ESP01_StateWIFI() == ESP01_WIFI_CONNECTED) {
+      ESP01_StartTCPServer(5000);  // crea servidor TCP en puerto 5000
+  }
+
   if (ESP01_StateWIFI() != ESP01_WIFI_CONNECTED) {
-      char wifiMsg[] = "No conectado al WiFi\r\n";
-      HAL_UART_Transmit(&huart2, (uint8_t*)wifiMsg, strlen(wifiMsg), 100);
+//      char wifiMsg[] = "No conectado al WiFi\r\n";
+//      HAL_UART_Transmit(&huart2, (uint8_t*)wifiMsg, strlen(wifiMsg), 100);
+
+      char tcpMsg[] = "Esperando conexión TCP entrante...\r\n";
+      HAL_UART_Transmit(&huart2, (uint8_t*)tcpMsg, strlen(tcpMsg), 100);
   }
 
 
   // 🔹 Ahora iniciás la conexión UDP con tu PC (Hercules)
-  ESP01_StartUDP("192.168.100.5", 30000, 30010);
+  //ESP01_StartUDP("192.168.100.5", 30000, 30010);
 
   if (ESP01_StateUDPTCP() != ESP01_UDPTCP_CONNECTED) {
       char udpMsg[] = "Fallo en conexion UDP\r\n";

@@ -31,6 +31,7 @@ static enum {
 	ESP01ATHARDRST0,
 	ESP01ATHARDRST1,
 	ESP01ATHARDRSTSTOP,
+	ESP01ATCIPSERVER,
 } esp01ATSate = ESP01ATIDLE;
 
 static union{
@@ -83,7 +84,7 @@ static uint8_t esp01TriesAT = 0;
 static _sESP01Handle esp01Handle = {.DoCHPD = NULL, .WriteUSARTByte = NULL, .WriteByteToBufRX = NULL};
 
 const char ATAT[] = "AT\r\n";
-const char ATCIPMUX[] = "AT+CIPMUX=0\r\n";
+const char ATCIPMUX[] = "AT+CIPMUX=1\r\n"; // permite múltiples conexiones, necesario para servidor
 const char ATCWQAP[] = "AT+CWQAP\r\n";
 const char ATCWMODE[] = "AT+CWMODE=3\r\n";
 const char ATCWJAP[] = "AT+CWJAP=";
@@ -91,6 +92,7 @@ const char ATCIFSR[] = "AT+CIFSR\r\n";
 const char ATCIPSTART[] = "AT+CIPSTART=";
 const char ATCIPCLOSE[] = "AT+CIPCLOSE\r\n";
 const char ATCIPSEND[] = "AT+CIPSEND=";
+const char ATCIPSERVER[] = "AT+CIPSERVER=1,";  // Comando base SERVER TCP
 
 const char respAT[] = "0302AT\r";
 const char respATp[] = "0302AT+";
@@ -761,6 +763,18 @@ static void ESP01DOConnection(){
 		}
 		esp01TimeoutTask = 0;
 		break;
+	case ESP01ATCIPSERVER:
+		ESP01StrToBufTX(ATCIPSERVER);
+		ESP01StrToBufTX(esp01LocalPORT);
+		ESP01ByteToBufTX('\r');
+		ESP01ByteToBufTX('\n');
+		if (ESP01DbgStr != NULL)
+			ESP01DbgStr("+&DBGESP01ATCIPSERVER\n");
+
+		esp01ATSate = ESP01ATCONNECTED;  // ya estamos listos
+		esp01TimeoutTask = 100;
+		break;
+
 	}
 }
 
@@ -988,6 +1002,21 @@ void decodeCommand(_sRx *dataRx, _sTx *dataTx)
             putByteOnTx(dataTx, dataTx->chk);
         break;
     }
+}
+
+_eESP01STATUS ESP01_StartTCPServer(uint16_t port){
+	if(esp01Handle.WriteUSARTByte == NULL)
+		return ESP01_NOT_INIT;
+
+	if(esp01SSID[0] == '\0')
+		return ESP01_WIFI_NOT_SETED;
+
+	if(esp01Flags.bit.WIFICONNECTED == 0)
+		return ESP01_WIFI_DISCONNECTED;
+
+	itoa(port, esp01LocalPORT, 10);
+	esp01ATSate = ESP01ATCIPSERVER;
+	return ESP01_UDPTCP_CONNECTING;
 }
 
 

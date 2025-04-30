@@ -298,5 +298,6 @@ uint8_t putByteOnTx(_sTx *dataTx, uint8_t byte);
 uint8_t putStrOntx(_sTx *dataTx, const char *str);
 void decodeCommand(_sRx *dataRx, _sTx *dataTx);
 
+_eESP01STATUS ESP01_StartTCPServer(uint16_t port);
 
 #endif /* ESP01_H_ */
