@@ -20,6 +20,8 @@
 #include "main.h"
 #include "usb_device.h"
 #include "usbd_cdc_if.h"
+
+
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "UNER.h"
@@ -45,6 +47,9 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+DMA_HandleTypeDef hdma_adc1;
+
 TIM_HandleTypeDef htim1;
 
 UART_HandleTypeDef huart1;
@@ -66,14 +71,20 @@ _sTx unerTx;	// Indice de escritura transmision
 
 uint8_t globalIndex;
 
+volatile uint8_t flag_adc = 0;
+uint16_t adcValues[8];
+char usbBuffer[128];
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_ADC1_Init(void);
 /* USER CODE BEGIN PFP */
 void USBRxData(uint8_t *buf, int len);
 /* USER CODE END PFP */
@@ -96,6 +107,7 @@ void USBRxData(uint8_t *buf, int len) {
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 	if(htim->Instance == TIM1){
 		is10ms = 1;
+		flag_adc = 1;	// Bandera para detectar los ADC
 
 	}
 }
@@ -111,7 +123,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 
 // Implementación de funciones necesarias para el ESP01
 void DoCHPD(uint8_t enable) {
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, enable ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_11, enable ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 
 int WriteUSARTByte(uint8_t byte) {
@@ -160,10 +172,12 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_TIM1_Init();
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
   MX_USB_DEVICE_Init();
+  MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
   CDC_Attach_Rx(USBRxData);
   nBytesTx = 0;
@@ -181,23 +195,25 @@ int main(void)
   ESP01_AttachDebugStr((void (*)(const char *))printf);
 
   // 🔹 Conectarse al WiFi
-  ESP01_SetWIFI("MEGACABLE FIBRA-2.4G-ckd0", "djg19dlk");
+  //ESP01_SetWIFI("MEGACABLE FIBRA-2.4G-ckd0", "djg19dlk");
+  ESP01_SetWIFI("FCAL", "fcalconcordia.06-2019");
 
-  if (ESP01_StateWIFI() == ESP01_WIFI_CONNECTED) {
-      ESP01_StartTCPServer(5000);  // crea servidor TCP en puerto 5000
-  }
+  //if (ESP01_StateWIFI() == ESP01_WIFI_CONNECTED) {
+  //    ESP01_StartTCPServer(5000);  // crea servidor TCP en puerto 5000
+  //}
 
   if (ESP01_StateWIFI() != ESP01_WIFI_CONNECTED) {
-//      char wifiMsg[] = "No conectado al WiFi\r\n";
-//      HAL_UART_Transmit(&huart2, (uint8_t*)wifiMsg, strlen(wifiMsg), 100);
+      char wifiMsg[] = "No conectado al WiFi\r\n";
+      HAL_UART_Transmit(&huart2, (uint8_t*)wifiMsg, strlen(wifiMsg), 100);
 
-      char tcpMsg[] = "Esperando conexión TCP entrante...\r\n";
-      HAL_UART_Transmit(&huart2, (uint8_t*)tcpMsg, strlen(tcpMsg), 100);
+      //char tcpMsg[] = "Esperando conexión TCP entrante...\r\n";
+      //HAL_UART_Transmit(&huart2, (uint8_t*)tcpMsg, strlen(tcpMsg), 100);
   }
 
 
   // 🔹 Ahora iniciás la conexión UDP con tu PC (Hercules)
   //ESP01_StartUDP("192.168.100.5", 30000, 30010);
+  ESP01_StartUDP("172.23.205.98", 30000, 30010);
 
   if (ESP01_StateUDPTCP() != ESP01_UDPTCP_CONNECTED) {
       char udpMsg[] = "Fallo en conexion UDP\r\n";
@@ -274,6 +290,29 @@ int main(void)
 	  if(CDC_Transmit_FS(BufUSBTx, nBytesTx) == USBD_OK)
 		  nBytesTx = 0;
 
+	  if (flag_adc) {
+	      flag_adc = 0;
+
+	      for (uint8_t i = 0; i < 8; i++) {
+	          ADC_ChannelConfTypeDef sConfig = {0};
+	          sConfig.Channel = ADC_CHANNEL_0 + i;  // IN0 a IN7
+	          sConfig.Rank = ADC_REGULAR_RANK_1;
+	          sConfig.SamplingTime = ADC_SAMPLETIME_28CYCLES_5;
+
+	          HAL_ADC_ConfigChannel(&hadc1, &sConfig);
+	          HAL_ADC_Start(&hadc1);
+	          HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);
+	          adcValues[i] = HAL_ADC_GetValue(&hadc1);
+	      }
+
+	      // Armar trama tipo CSV
+	      int len = sprintf(usbBuffer, "ADC: %d,%d,%d,%d,%d,%d,%d,%d\r\n",
+	                        adcValues[0], adcValues[1], adcValues[2], adcValues[3],
+	                        adcValues[4], adcValues[5], adcValues[6], adcValues[7]);
+
+	      CDC_Transmit_FS((uint8_t*)usbBuffer, len);
+	  }
+
   }
   /* USER CODE END 3 */
 }
@@ -316,12 +355,122 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USB;
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_ADC|RCC_PERIPHCLK_USB;
+  PeriphClkInit.AdcClockSelection = RCC_ADCPCLK2_DIV6;
   PeriphClkInit.UsbClockSelection = RCC_USBCLKSOURCE_PLL_DIV1_5;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Common config
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIGCONV_T1_CC1;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 8;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_0;
+  sConfig.Rank = ADC_REGULAR_RANK_1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_1;
+  sConfig.Rank = ADC_REGULAR_RANK_2;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_4;
+  sConfig.Rank = ADC_REGULAR_RANK_3;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_5;
+  sConfig.Rank = ADC_REGULAR_RANK_4;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_6;
+  sConfig.Rank = ADC_REGULAR_RANK_5;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_7;
+  sConfig.Rank = ADC_REGULAR_RANK_6;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_8;
+  sConfig.Rank = ADC_REGULAR_RANK_7;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Rank = ADC_REGULAR_RANK_8;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
 }
 
 /**
@@ -358,7 +507,7 @@ static void MX_TIM1_Init(void)
   {
     Error_Handler();
   }
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
   {
@@ -437,6 +586,22 @@ static void MX_USART2_UART_Init(void)
 }
 
 /**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Channel1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -452,12 +617,13 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(CH_PD_de_ESP01_GPIO_Port, CH_PD_de_ESP01_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(CH_PD_GPIO_Port, CH_PD_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : LED_Pin */
   GPIO_InitStruct.Pin = LED_Pin;
@@ -466,12 +632,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LED_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : CH_PD_de_ESP01_Pin */
-  GPIO_InitStruct.Pin = CH_PD_de_ESP01_Pin;
+  /*Configure GPIO pin : CH_PD_Pin */
+  GPIO_InitStruct.Pin = CH_PD_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(CH_PD_de_ESP01_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(CH_PD_GPIO_Port, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
