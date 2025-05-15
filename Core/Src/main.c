@@ -19,6 +19,8 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "usb_device.h"
+#include "usbd_cdc_if.h"
+
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -56,7 +58,7 @@ UART_HandleTypeDef huart2;
 /* USER CODE BEGIN PV */
 uint8_t BufUSBTx[256], nBytesTx;
 
-uint32_t is10ms, tmo100ms;
+uint32_t is250ms, tmo100ms;
 
 uint8_t dataTx, dataRx;
 
@@ -69,9 +71,11 @@ _sTx unerTx;	// Indice de escritura transmision
 
 uint8_t globalIndex;
 
-volatile uint8_t flag_adc = 0;
-uint16_t adcValues[8];
 char usbBuffer[128];
+
+uint16_t adcValues[8];
+uint8_t flag_adc = 0;
+uint8_t adcCounter = 0;
 
 /* USER CODE END PV */
 
@@ -104,9 +108,9 @@ void USBRxData(uint8_t *buf, int len) {
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 	if(htim->Instance == TIM1){
-		is10ms = 1;
+		is250ms = 1;
 		flag_adc = 1;	// Bandera para detectar los ADC
-
+		adcCounter++;
 	}
 }
 
@@ -117,7 +121,6 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
         HAL_UART_Receive_IT(&huart1, &dataRx, 1);
     }
 }
-
 
 // Implementación de funciones necesarias para el ESP01
 void DoCHPD(uint8_t enable) {
@@ -138,6 +141,13 @@ static _sESP01Handle esp01Handle = {
     .WriteUSARTByte = WriteUSARTByte,
     .WriteByteToBufRX = WriteToBuf
 };
+
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
+    if (hadc->Instance == ADC1) {	// Interrupcion de conversion de los ADC listos
+        flag_adc = 1;
+    }
+}
+
 
 /* USER CODE END 0 */
 
@@ -184,7 +194,7 @@ int main(void)
   HAL_UART_Receive_IT(&huart1, &dataRx, 1);
 
   tmo100ms = 10;
-  is10ms = 0;
+  is250ms = 0;
   dataTx = 0;
 
   // 🔹 Inicializar el ESP01
@@ -221,6 +231,7 @@ int main(void)
   unerRx.buff = unerRxBuffer;
   unerTx.buff = unerTxBuffer;
   UNER_Init(&unerRx, &unerTx);
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValues, 8);
 
 
   /* USER CODE END 2 */
@@ -232,8 +243,8 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  if (is10ms) {
-	      is10ms = 0;
+	  if (is250ms) {
+	      is250ms = 0;
 	      ESP01_Timeout10ms();  // Requerido por la librería ESP01
 
 	      tmo100ms--;
@@ -288,27 +299,20 @@ int main(void)
 	  if(CDC_Transmit_FS(BufUSBTx, nBytesTx) == USBD_OK)
 		  nBytesTx = 0;
 
-	  if (flag_adc) {
-	      flag_adc = 0;
+	  if(adcCounter >= 4) {
+		  if (flag_adc) {
+			  flag_adc = 0;
 
-	      for (uint8_t i = 0; i < 8; i++) {
-	          ADC_ChannelConfTypeDef sConfig = {0};
-	          sConfig.Channel = ADC_CHANNEL_0 + i;  // IN0 a IN7
-	          sConfig.Rank = ADC_REGULAR_RANK_1;
-	          sConfig.SamplingTime = ADC_SAMPLETIME_28CYCLES_5;
+			  int len = sprintf(usbBuffer, "ADC: %d,%d,%d,%d,%d,%d,%d,%d\r\n",
+								adcValues[0], adcValues[1], adcValues[2], adcValues[3],
+								adcValues[4], adcValues[5], adcValues[6], adcValues[7]);
 
-	          HAL_ADC_ConfigChannel(&hadc1, &sConfig);
-	          HAL_ADC_Start(&hadc1);
-	          HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);
-	          adcValues[i] = HAL_ADC_GetValue(&hadc1);
-	      }
+			  CDC_Transmit_FS((uint8_t*)usbBuffer, len);
 
-	      // Armar trama tipo CSV
-	      int len = sprintf(usbBuffer, "ADC: %d,%d,%d,%d,%d,%d,%d,%d\r\n",
-	                        adcValues[0], adcValues[1], adcValues[2], adcValues[3],
-	                        adcValues[4], adcValues[5], adcValues[6], adcValues[7]);
-
-	      CDC_Transmit_FS((uint8_t*)usbBuffer, len);
+			  // 🔁 Reiniciar conversión ADC por DMA
+			  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValues, 8);
+			  adcCounter = 0;
+		  }
 	  }
 
   }
@@ -460,6 +464,7 @@ static void MX_ADC1_Init(void)
 
   /** Configure Regular Channel
   */
+  sConfig.Channel = ADC_CHANNEL_9;
   sConfig.Rank = ADC_REGULAR_RANK_8;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
@@ -490,9 +495,9 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
-  htim1.Init.Prescaler = 71;
+  htim1.Init.Prescaler = 35999;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 9999;
+  htim1.Init.Period = 499;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
