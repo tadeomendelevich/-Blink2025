@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "usb_device.h"
+#include "usbd_cdc_if.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -59,8 +60,6 @@ uint8_t BufUSBTx[256], nBytesTx;
 uint32_t is250ms, tmo100ms;
 
 uint8_t dataTx, dataRx;
-
-static uint16_t counter = 0;
 
 uint8_t unerRxBuffer[RXBUFSIZE];	// Buffer de recepcion protoclo UNER
 uint8_t unerTxBuffer[TXBUFSIZE];	// Buffer de transmision protocolo UNER
@@ -107,7 +106,6 @@ void USBRxData(uint8_t *buf, int len) {
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 	if(htim->Instance == TIM1){
 		is250ms = 1;
-		flag_adc = 1;	// Bandera para detectar los ADC
 		adcCounter++;
 	}
 }
@@ -140,11 +138,12 @@ static _sESP01Handle esp01Handle = {
     .WriteByteToBufRX = WriteToBuf
 };
 
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
-    if (hadc->Instance == ADC1) {	// Interrupcion de conversion de los ADC listos
-        flag_adc = 1;
-    }
-}
+//void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
+//    if (hadc->Instance == ADC1) {	// Interrupcion de conversion de los ADC listos
+//        flag_adc = 1;
+//        HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin); // Blink LED
+//    }
+//}
 
 
 /* USER CODE END 0 */
@@ -188,6 +187,8 @@ int main(void)
   CDC_Attach_Rx(USBRxData);
   nBytesTx = 0;
 
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValues, 8);
+
   HAL_TIM_Base_Start_IT(&htim1);
   HAL_UART_Receive_IT(&huart1, &dataRx, 1);
 
@@ -229,7 +230,6 @@ int main(void)
   unerRx.buff = unerRxBuffer;
   unerTx.buff = unerTxBuffer;
   UNER_Init(&unerRx, &unerTx);
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValues, 8);
 
 
   /* USER CODE END 2 */
@@ -251,25 +251,29 @@ int main(void)
 	          HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin); // Blink LED
 	      }
 
-	      // Enviar "HOLA\r\n" cada 2 segundos
-	      counter++;
-	      if (counter >= 200) { // 200 * 10 ms = 2000 ms = 2 seg
-	          counter = 0;
-
-	          if (ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED) {
-	              char debugMsg[] = "ESP01 UDP conectado\r\n";
-	              HAL_UART_Transmit(&huart2, (uint8_t*)debugMsg, strlen(debugMsg), 100);
-
-	              const char msg[] = "HOLA\r\n";
-	              ESP01_Send((uint8_t*)msg, 0, sizeof(msg) - 1, sizeof(msg) - 1);
-	          } else {
-	              char debugMsg[] = "ESP01 aún no conectado\r\n";
-	              HAL_UART_Transmit(&huart2, (uint8_t*)debugMsg, strlen(debugMsg), 100);
-	          }
-	      }
-
-
 	  }
+
+	  if(adcCounter >= 1) {		// Envio y acero valores ADC
+		  //if (flag_adc) {
+			  //flag_adc = 0;
+
+		  int len = sprintf(usbBuffer, "ADC: %d\r\n", adcValues[0]);
+//			  int len = sprintf(usbBuffer, "ADC: %d,%d,%d,%d,%d,%d,%d,%d\r\n",
+//								adcValues[0], adcValues[1], adcValues[2], adcValues[3],
+//								adcValues[4], adcValues[5], adcValues[6], adcValues[7]);
+
+			  CDC_Transmit_FS((uint8_t*)usbBuffer, len);
+
+			  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValues, 8);	// Reinicio lectura ADC's
+
+			  adcCounter = 0;
+		  //}
+	  }
+
+
+
+
+
 
 	  ESP01_Task(); // Procesa tramas ESP01 recibidas
 	  UNER_Task(); // Procesa tramas UNER recibidas
@@ -296,24 +300,6 @@ int main(void)
 
 	  if(CDC_Transmit_FS(BufUSBTx, nBytesTx) == USBD_OK)
 		  nBytesTx = 0;
-
-	  //if(adcCounter >= 2) {
-		  if (flag_adc) {
-			  flag_adc = 0;
-
-//			  int len = sprintf(usbBuffer, "ADC: %d,%d,%d,%d,%d,%d,%d,%d\r\n",
-//								adcValues[0], adcValues[1], adcValues[2], adcValues[3],
-//								adcValues[4], adcValues[5], adcValues[6], adcValues[7]);
-
-			  int len = sprintf(usbBuffer, "ADC: %d\r\n", adcValues[0]);
-
-			  CDC_Transmit_FS((uint8_t*)usbBuffer, len);
-
-			  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValues, 8);	// Reiniciar conversión ADC por DMA
-			  //adcCounter = 0;
-		  }
-	  //}
-
   }
   /* USER CODE END 3 */
 }
