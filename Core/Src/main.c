@@ -19,8 +19,6 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "usb_device.h"
-#include "usbd_cdc_if.h"
-
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -299,21 +297,22 @@ int main(void)
 	  if(CDC_Transmit_FS(BufUSBTx, nBytesTx) == USBD_OK)
 		  nBytesTx = 0;
 
-	  if(adcCounter >= 4) {
+	  //if(adcCounter >= 2) {
 		  if (flag_adc) {
 			  flag_adc = 0;
 
-			  int len = sprintf(usbBuffer, "ADC: %d,%d,%d,%d,%d,%d,%d,%d\r\n",
-								adcValues[0], adcValues[1], adcValues[2], adcValues[3],
-								adcValues[4], adcValues[5], adcValues[6], adcValues[7]);
+//			  int len = sprintf(usbBuffer, "ADC: %d,%d,%d,%d,%d,%d,%d,%d\r\n",
+//								adcValues[0], adcValues[1], adcValues[2], adcValues[3],
+//								adcValues[4], adcValues[5], adcValues[6], adcValues[7]);
+
+			  int len = sprintf(usbBuffer, "ADC: %d\r\n", adcValues[0]);
 
 			  CDC_Transmit_FS((uint8_t*)usbBuffer, len);
 
-			  // 🔁 Reiniciar conversión ADC por DMA
-			  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValues, 8);
-			  adcCounter = 0;
+			  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValues, 8);	// Reiniciar conversión ADC por DMA
+			  //adcCounter = 0;
 		  }
-	  }
+	  //}
 
   }
   /* USER CODE END 3 */
