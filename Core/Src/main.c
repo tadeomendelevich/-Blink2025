@@ -19,15 +19,15 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "usb_device.h"
-#include "usbd_cdc_if.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "ESP01.h"
 #include "UNER.h"
 #include <stdio.h>
 #include <string.h>
-
-
+#include "usbd_cdc_if.h"
+#include <stdarg.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -50,6 +50,7 @@ ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
 
 TIM_HandleTypeDef htim1;
+TIM_HandleTypeDef htim2;
 
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
@@ -57,16 +58,14 @@ UART_HandleTypeDef huart2;
 /* USER CODE BEGIN PV */
 uint8_t BufUSBTx[256], nBytesTx;
 
-uint32_t is250ms, tmo100ms;
+uint8_t is250us, tmo100ms, is10ms;
 
 uint8_t dataTx, dataRx;
 
-uint8_t unerRxBuffer[RXBUFSIZE];	// Buffer de recepcion protoclo UNER
-uint8_t unerTxBuffer[TXBUFSIZE];	// Buffer de transmision protocolo UNER
-_sRx unerRx;	// Indice de lectura recepcion
-_sTx unerTx;	// Indice de escritura transmision
-
-uint8_t globalIndex;
+static uint8_t unerRxBuffer[RXBUFSIZE];
+static uint8_t unerTxBuffer[TXBUFSIZE];
+static _sRx    unerRx;
+static _sTx    unerTx;
 
 char usbBuffer[128];
 
@@ -84,6 +83,7 @@ static void MX_TIM1_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_ADC1_Init(void);
+static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 void USBRxData(uint8_t *buf, int len);
 /* USER CODE END PFP */
@@ -104,9 +104,13 @@ void USBRxData(uint8_t *buf, int len) {
 }
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
-	if(htim->Instance == TIM1){
-		is250ms = 1;
+	if(htim->Instance == TIM1){		// 250us
+		is250us = 1;
 		adcCounter++;
+	}
+
+	if (htim->Instance == TIM2) {	// 10ms
+		is10ms = 1;
 	}
 }
 
@@ -118,7 +122,6 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     }
 }
 
-// Implementación de funciones necesarias para el ESP01
 void DoCHPD(uint8_t enable) {
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_11, enable ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
@@ -138,13 +141,19 @@ static _sESP01Handle esp01Handle = {
     .WriteByteToBufRX = WriteToBuf
 };
 
+void ESP01_USB_DbgStr(const char *dbgStr) {
+    uint16_t len = strlen(dbgStr);
+    if (len) CDC_Transmit_FS((uint8_t*)dbgStr, len);
+}
+
+
+
 //void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
 //    if (hadc->Instance == ADC1) {	// Interrupcion de conversion de los ADC listos
 //        flag_adc = 1;
 //        HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin); // Blink LED
 //    }
 //}
-
 
 /* USER CODE END 0 */
 
@@ -183,6 +192,7 @@ int main(void)
   MX_USART2_UART_Init();
   MX_USB_DEVICE_Init();
   MX_ADC1_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
   CDC_Attach_Rx(USBRxData);
   nBytesTx = 0;
@@ -190,20 +200,17 @@ int main(void)
   HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValues, 8);
 
   HAL_TIM_Base_Start_IT(&htim1);
+  HAL_TIM_Base_Start_IT(&htim2);
   HAL_UART_Receive_IT(&huart1, &dataRx, 1);
 
-  tmo100ms = 10;
-  is250ms = 0;
-  dataTx = 0;
-
-  // 🔹 Inicializar el ESP01
   ESP01_Init(&esp01Handle);
 
-  ESP01_AttachDebugStr((void (*)(const char *))printf);
+  //ESP01_AttachDebugStr((void (*)(const char *))printf);
+  ESP01_AttachDebugStr(ESP01_USB_DbgStr);
 
   // 🔹 Conectarse al WiFi
-  //ESP01_SetWIFI("MEGACABLE FIBRA-2.4G-ckd0", "djg19dlk");
-  ESP01_SetWIFI("FCAL", "fcalconcordia.06-2019");
+  ESP01_SetWIFI("MEGACABLE FIBRA-2.4G-ckd0", "djg19dlk");
+  //ESP01_SetWIFI("FCAL", "fcalconcordia.06-2019");
 
   //if (ESP01_StateWIFI() == ESP01_WIFI_CONNECTED) {
   //    ESP01_StartTCPServer(5000);  // crea servidor TCP en puerto 5000
@@ -218,9 +225,8 @@ int main(void)
   }
 
 
-  // 🔹 Ahora iniciás la conexión UDP con tu PC (Hercules)
-  //ESP01_StartUDP("192.168.100.5", 30000, 30010);
-  ESP01_StartUDP("172.23.205.98", 30000, 30010);
+  //ESP01_StartUDP("172.23.205.98", 30000, 30010);
+  ESP01_StartUDP("192.168.100.5", 30000, 30010);		// Inicio conexion UDP
 
   if (ESP01_StateUDPTCP() != ESP01_UDPTCP_CONNECTED) {
       char udpMsg[] = "Fallo en conexion UDP\r\n";
@@ -228,10 +234,15 @@ int main(void)
   }
 
   unerRx.buff = unerRxBuffer;
+  unerRx.mask = RXBUFSIZE - 1;
   unerTx.buff = unerTxBuffer;
+  unerTx.mask = TXBUFSIZE - 1;
   UNER_Init(&unerRx, &unerTx);
 
-
+  tmo100ms = 10;
+  is250us = 0;
+  dataTx = 0;
+  is10ms = 0;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -241,38 +252,36 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  if (is250ms) {
-	      is250ms = 0;
-	      ESP01_Timeout10ms();  // Requerido por la librería ESP01
-
-	      tmo100ms--;
-	      if (tmo100ms == 0) {
-	          tmo100ms = 10;
-	          HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin); // Blink LED
-	      }
-
+	  if (is250us) {
+	      is250us = 0;
 	  }
 
-	  if(adcCounter >= 1) {		// Envio y acero valores ADC
-		  //if (flag_adc) {
-			  //flag_adc = 0;
+	  if(is10ms) {
+		  is10ms = 0;
+
+		  ESP01_Timeout10ms();  // Requerido por la librería ESP01
+
+		  tmo100ms--;
+		  if (tmo100ms == 0) {
+			  tmo100ms = 10;
+			  HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin); // Blink LED
+		  }
+	  }
+
+	  /*if(adcCounter >= 1) {		// Envio y acero valores ADC
 
 		  int len = sprintf(usbBuffer, "ADC: %d\r\n", adcValues[0]);
 //			  int len = sprintf(usbBuffer, "ADC: %d,%d,%d,%d,%d,%d,%d,%d\r\n",
 //								adcValues[0], adcValues[1], adcValues[2], adcValues[3],
 //								adcValues[4], adcValues[5], adcValues[6], adcValues[7]);
 
-			  CDC_Transmit_FS((uint8_t*)usbBuffer, len);
+		  CDC_Transmit_FS((uint8_t*)usbBuffer, len);
 
-			  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValues, 8);	// Reinicio lectura ADC's
+		  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValues, 8);	// Reinicio lectura ADC's
 
-			  adcCounter = 0;
-		  //}
-	  }
+		  adcCounter = 0;
 
-
-
-
+	  }*/
 
 
 	  ESP01_Task(); // Procesa tramas ESP01 recibidas
@@ -480,9 +489,9 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
-  htim1.Init.Prescaler = 35999;
+  htim1.Init.Prescaler = 71;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 499;
+  htim1.Init.Period = 249;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -504,6 +513,51 @@ static void MX_TIM1_Init(void)
   /* USER CODE BEGIN TIM1_Init 2 */
 
   /* USER CODE END TIM1_Init 2 */
+
+}
+
+/**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 7199;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 99;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
 
 }
 
