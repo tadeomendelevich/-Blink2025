@@ -37,7 +37,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define CH_PD_Pin        GPIO_PIN_11
+#define CH_PD_GPIO_Port  GPIOB
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -60,7 +61,7 @@ uint8_t BufUSBTx[256], nBytesTx;
 
 uint8_t is250us, tmo100ms, is10ms;
 
-uint8_t dataTx, dataRx;
+uint8_t dataTx, dataRx, ESPSend;
 
 static uint8_t unerRxBuffer[RXBUFSIZE];
 static uint8_t unerTxBuffer[TXBUFSIZE];
@@ -73,6 +74,8 @@ uint16_t adcValues[8];
 uint8_t flag_adc = 0;
 uint8_t adcCounter = 0;
 
+static uint8_t esp01RxBuf[ESP01RXBUFAT];
+static uint16_t esp01IwRx = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -86,6 +89,10 @@ static void MX_ADC1_Init(void);
 static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 void USBRxData(uint8_t *buf, int len);
+static int  uart_send_byte(uint8_t byte);
+static void esp01_chpd(uint8_t val);
+void onESP01StateChange(_eESP01STATUS state);
+void ESP01_USB_DbgStr(const char *dbgStr);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -116,37 +123,60 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART1) {
-        ESP01_WriteRX(dataRx);    // ESP01 pueda leer respuestas AT
-        UNER_PushByte(dataRx);    // UNER reciba comandos de Qt/PC
+        ESP01_WriteRX(dataRx);      // Sube byte al buffer AT
         HAL_UART_Receive_IT(&huart1, &dataRx, 1);
     }
 }
 
-void DoCHPD(uint8_t enable) {
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_11, enable ? GPIO_PIN_SET : GPIO_PIN_RESET);
+static void esp01_chpd(uint8_t val) {
+    // CH_PD_GPIO_Port y CH_PD_Pin vienen de MX_GPIO_Init()
+    HAL_GPIO_WritePin(CH_PD_GPIO_Port, CH_PD_Pin,
+                      val ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 
-int WriteUSARTByte(uint8_t byte) {
+static int uart_send_byte(uint8_t byte) {
     return (HAL_UART_Transmit(&huart1, &byte, 1, 100) == HAL_OK) ? 1 : 0;
 }
 
-void WriteToBuf(uint8_t b) {
-    ESP01_WriteRX(b); // Usa el buffer interno del driver
+void onESP01StateChange(_eESP01STATUS state) {
+    switch(state) {
+        case ESP01_WIFI_CONNECTED:
+            ESP01_USB_DbgStr("\r\n>>> ESP01: WIFI_CONNECTED (got IP) <<<\r\n");
+            ESP01_StartUDP("192.168.100.5", 30010, 30000);
+            break;
+        case ESP01_WIFI_NEW_IP: {
+            char buf[64];
+            snprintf(buf, sizeof(buf),
+                     "\r\n>>> ESP01: New IP Address = %s <<<\r\n",
+                     ESP01_GetLocalIP());
+            ESP01_USB_DbgStr(buf);
+            break;
+        }
+        case ESP01_WIFI_DISCONNECTED:
+            ESP01_USB_DbgStr("\r\nxxx ESP01: WIFI_DISCONNECTED xxx\r\n");
+            break;
+        case ESP01_UDPTCP_CONNECTED:
+            ESP01_USB_DbgStr("\r\n+++ ESP01: UDP Connection Established +++\r\n");
+            if (ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED) {
+				const char msg[] = "Ping desde ESP01\r\n";
+				//ESP01_USB_DbgStr("\r\n>>> ESP01: Sending periodic ping <<<\r\n");
+				ESP01_Send((uint8_t*)msg, 0, sizeof(msg)-1, sizeof(msg)-1);
+			  }
+            break;
+        case ESP01_SEND_OK:
+            ESP01_USB_DbgStr("\r\n>>> ESP01: Data Sent OK <<<\r\n");
+            break;
+        default:
+            break;
+    }
 }
 
-// Instancia del handle
-static _sESP01Handle esp01Handle = {
-    .DoCHPD = DoCHPD,
-    .WriteUSARTByte = WriteUSARTByte,
-    .WriteByteToBufRX = WriteToBuf
-};
+
 
 void ESP01_USB_DbgStr(const char *dbgStr) {
     uint16_t len = strlen(dbgStr);
     if (len) CDC_Transmit_FS((uint8_t*)dbgStr, len);
 }
-
-
 
 //void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
 //    if (hadc->Instance == ADC1) {	// Interrupcion de conversion de los ADC listos
@@ -203,35 +233,31 @@ int main(void)
   HAL_TIM_Base_Start_IT(&htim2);
   HAL_UART_Receive_IT(&huart1, &dataRx, 1);
 
-  ESP01_Init(&esp01Handle);
+  static _sESP01Handle esp01Handle = {
+      .aDoCHPD         = esp01_chpd,                  // Controla CH_PD
+      .aWriteUSARTByte = uart_send_byte,          // Envía un byte por UART
+      .bufRX           = esp01RxBuf,              // Buffer de recepción
+      .iwRX            = &esp01IwRx,              // Índice de escritura
+      .sizeBufferRX    = sizeof(esp01RxBuf)       // Tamaño del buffer
+  };
+  ESP01_Init(&esp01Handle);                        // Copia el handle interno :contentReference[oaicite:1]{index=1}
+  esp01_chpd(1);  // Pone CH_PD a nivel alto para sacar al módulo de reset
+  HAL_Delay(100);
 
   //ESP01_AttachDebugStr((void (*)(const char *))printf);
   ESP01_AttachDebugStr(ESP01_USB_DbgStr);
+  ESP01_AttachChangeState(onESP01StateChange);
 
-  // 🔹 Conectarse al WiFi
   ESP01_SetWIFI("MEGACABLE FIBRA-2.4G-ckd0", "djg19dlk");
   //ESP01_SetWIFI("FCAL", "fcalconcordia.06-2019");
+
 
   //if (ESP01_StateWIFI() == ESP01_WIFI_CONNECTED) {
   //    ESP01_StartTCPServer(5000);  // crea servidor TCP en puerto 5000
   //}
 
-  if (ESP01_StateWIFI() != ESP01_WIFI_CONNECTED) {
-      char wifiMsg[] = "No conectado al WiFi\r\n";
-      HAL_UART_Transmit(&huart2, (uint8_t*)wifiMsg, strlen(wifiMsg), 100);
-
-      //char tcpMsg[] = "Esperando conexión TCP entrante...\r\n";
-      //HAL_UART_Transmit(&huart2, (uint8_t*)tcpMsg, strlen(tcpMsg), 100);
-  }
-
-
   //ESP01_StartUDP("172.23.205.98", 30000, 30010);
-  ESP01_StartUDP("192.168.100.5", 30000, 30010);		// Inicio conexion UDP
-
-  if (ESP01_StateUDPTCP() != ESP01_UDPTCP_CONNECTED) {
-      char udpMsg[] = "Fallo en conexion UDP\r\n";
-      HAL_UART_Transmit(&huart2, (uint8_t*)udpMsg, strlen(udpMsg), 100);
-  }
+  //ESP01_StartUDP("192.168.100.5", 30000, 30010);		// Inicio conexion UDP
 
   unerRx.buff = unerRxBuffer;
   unerRx.mask = RXBUFSIZE - 1;
@@ -241,8 +267,8 @@ int main(void)
 
   tmo100ms = 10;
   is250us = 0;
-  dataTx = 0;
   is10ms = 0;
+  ESPSend = 0;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -259,13 +285,27 @@ int main(void)
 	  if(is10ms) {
 		  is10ms = 0;
 
+		  /*ESPCounter++;
+		  if (ESPCounter >= 100) {
+			  ESPCounter = 0;
+			  // Solo si ya estamos conectados UDP
+			  if (ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED) {
+				  const char msg[] = "Ping desde ESP01\r\n";
+				  //ESP01_USB_DbgStr("\r\n>>> ESP01: Sending periodic ping <<<\r\n");
+				  ESP01_Send((uint8_t*)msg, 0, sizeof(msg)-1, sizeof(msg)-1);
+			  }
+		  }*/
+
 		  ESP01_Timeout10ms();  // Requerido por la librería ESP01
+		  ESP01_Task(); // Procesa tramas ESP01 recibidas
+		  UNER_Task(); // Procesa tramas UNER recibidas
 
 		  tmo100ms--;
 		  if (tmo100ms == 0) {
 			  tmo100ms = 10;
 			  HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin); // Blink LED
 		  }
+
 	  }
 
 	  /*if(adcCounter >= 1) {		// Envio y acero valores ADC
@@ -284,8 +324,7 @@ int main(void)
 	  }*/
 
 
-	  ESP01_Task(); // Procesa tramas ESP01 recibidas
-	  UNER_Task(); // Procesa tramas UNER recibidas
+
 
 	  if (unerTx.indexR != unerTx.indexW && ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED) {
 	      uint8_t dataToSend[TXBUFSIZE];

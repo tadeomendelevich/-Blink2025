@@ -1,17 +1,16 @@
 /*
  * ESP01.c
  *
- *  Created on: May 26, 2025
+ *  Created on: June 11, 2025
  *      Author: Tadeo Mendelevich
  */
-
-#ifndef SRC_ESP01_C_
-#define SRC_ESP01_C_
 
 #include "ESP01.h"
 #include <stddef.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
+
 
 static enum {
 	ESP01ATIDLE,
@@ -30,7 +29,6 @@ static enum {
 	ESP01ATHARDRST0,
 	ESP01ATHARDRST1,
 	ESP01ATHARDRSTSTOP,
-	ESP01ATCIPSERVER,
 } esp01ATSate = ESP01ATIDLE;
 
 static union{
@@ -56,8 +54,8 @@ static void ESP01ByteToBufTX(uint8_t value);
 static uint32_t esp01TimeoutTask = 0;
 static uint32_t esp01TimeoutDataRx = 0;
 static uint32_t esp01TimeoutTxSymbol = 0;
-static void (*ESP01ChangeState)(_eESP01STATUS esp01State);
-static void (*ESP01DbgStr)(const char *dbgStr);
+static OnESP01ChangeState aESP01ChangeState = NULL;
+static ESP01DebugStr aDbgStr = NULL;
 
 static char esp01SSID[64] = {0};
 static char esp01PASSWORD[32] = {0};
@@ -69,8 +67,8 @@ static char esp01LocalPORT[6] = {0};
 
 static uint8_t esp01HState = 0;
 static uint16_t	esp01nBytes = 0;
-static uint8_t esp01RXATBuf[ESP01RXBUFAT];
-static uint8_t esp01TXATBuf[ESP01TXBUFAT];
+static uint8_t	esp01RXATBuf[ESP01RXBUFAT];
+static uint8_t	esp01TXATBuf[ESP01TXBUFAT];
 static uint16_t	esp01iwRXAT = 0;
 static uint16_t	esp01irRXAT = 0;
 static uint16_t esp01irTX = 0;
@@ -78,12 +76,11 @@ static uint16_t esp01iwTX = 0;
 
 static uint8_t esp01TriesAT = 0;
 
-//static _sESP01Handle esp01Handle = {.DoCHPD = NULL, .WriteUSARTByte = NULL,
-//									.bufRX = NULL, .iwRX = NULL, .sizeBufferRX = 0};
-static _sESP01Handle esp01Handle = {.DoCHPD = NULL, .WriteUSARTByte = NULL, .WriteByteToBufRX = NULL};
+static _sESP01Handle esp01Handle = {.aDoCHPD = NULL, .aWriteUSARTByte = NULL,
+									.bufRX = NULL, .iwRX = NULL, .sizeBufferRX = 0};
 
 const char ATAT[] = "AT\r\n";
-const char ATCIPMUX[] = "AT+CIPMUX=1\r\n"; // permite múltiples conexiones, necesario para servidor
+const char ATCIPMUX[] = "AT+CIPMUX=0\r\n";
 const char ATCWQAP[] = "AT+CWQAP\r\n";
 const char ATCWMODE[] = "AT+CWMODE=3\r\n";
 const char ATCWJAP[] = "AT+CWJAP=";
@@ -91,7 +88,6 @@ const char ATCIFSR[] = "AT+CIFSR\r\n";
 const char ATCIPSTART[] = "AT+CIPSTART=";
 const char ATCIPCLOSE[] = "AT+CIPCLOSE\r\n";
 const char ATCIPSEND[] = "AT+CIPSEND=";
-const char ATCIPSERVER[] = "AT+CIPSERVER=1,";  // Comando base SERVER TCP
 
 const char respAT[] = "0302AT\r";
 const char respATp[] = "0302AT+";
@@ -149,7 +145,7 @@ void ESP01_SetWIFI(const char *ssid, const char *password){
 
 
 _eESP01STATUS ESP01_StartUDP(const char *RemoteIP, uint16_t RemotePORT, uint16_t LocalPORT){
-	if(esp01Handle.WriteUSARTByte == NULL)
+	if(esp01Handle.aWriteUSARTByte == NULL)
 		return ESP01_NOT_INIT;
 
 	if(LocalPORT == 0)
@@ -175,7 +171,7 @@ _eESP01STATUS ESP01_StartUDP(const char *RemoteIP, uint16_t RemotePORT, uint16_t
 }
 
 _eESP01STATUS ESP01_StartTCP(const char *RemoteIP, uint16_t RemotePORT, uint16_t LocalPORT){
-	if(esp01Handle.WriteUSARTByte == NULL)
+	if(esp01Handle.aWriteUSARTByte == NULL)
 		return ESP01_NOT_INIT;
 
 	if(LocalPORT == 0)
@@ -202,14 +198,14 @@ _eESP01STATUS ESP01_StartTCP(const char *RemoteIP, uint16_t RemotePORT, uint16_t
 
 
 void ESP01_CloseUDPTCP(){
-	if(esp01Handle.WriteUSARTByte == NULL)
+	if(esp01Handle.aWriteUSARTByte == NULL)
 		return;
 
 	esp01ATSate = ESP01ATCIPCLOSE;
 }
 
 _eESP01STATUS ESP01_StateWIFI(){
-	if(esp01Handle.WriteUSARTByte == NULL)
+	if(esp01Handle.aWriteUSARTByte == NULL)
 		return ESP01_NOT_INIT;
 
 	if(esp01Flags.bit.WIFICONNECTED)
@@ -227,7 +223,7 @@ char *ESP01_GetLocalIP(){
 
 
 _eESP01STATUS ESP01_StateUDPTCP(){
-	if(esp01Handle.WriteUSARTByte == NULL)
+	if(esp01Handle.aWriteUSARTByte == NULL)
 		return ESP01_NOT_INIT;
 
 	if(esp01Flags.bit.UDPTCPCONNECTED)
@@ -238,15 +234,15 @@ _eESP01STATUS ESP01_StateUDPTCP(){
 
 
 void ESP01_WriteRX(uint8_t value){
-//	if(esp01Handle.bufRX == NULL)
-//		return;
+	if(esp01Handle.bufRX == NULL)
+		return;
 	esp01RXATBuf[esp01iwRXAT++] = value;
 	if(esp01iwRXAT == ESP01RXBUFAT)
 		esp01iwRXAT = 0;
 }
 
 _eESP01STATUS ESP01_Send(uint8_t *buf, uint16_t irRingBuf, uint16_t length, uint16_t sizeRingBuf){
-	if(esp01Handle.WriteUSARTByte == NULL)
+	if(esp01Handle.aWriteUSARTByte == NULL)
 		return ESP01_NOT_INIT;
 
 	if(esp01Flags.bit.UDPTCPCONNECTED == 0)
@@ -276,18 +272,18 @@ _eESP01STATUS ESP01_Send(uint8_t *buf, uint16_t irRingBuf, uint16_t length, uint
 		esp01Flags.bit.TXCIPSEND = 1;
 		esp01Flags.bit.SENDINGDATA = 1;
 
-		if(ESP01DbgStr != NULL){
-			ESP01DbgStr("+&DBGSENDING DATA ");
-			ESP01DbgStr(strInt);
-			ESP01DbgStr("\n");
+		if(aDbgStr != NULL){
+			aDbgStr("+&DBGSENDING DATA ");
+			aDbgStr(strInt);
+			aDbgStr("\n");
 		}
 
 
 		return ESP01_SEND_READY;
 	}
 
-	if(ESP01DbgStr != NULL)
-		ESP01DbgStr("+&DBGSENDING DATA BUSY\n");
+	if(aDbgStr != NULL)
+		aDbgStr("+&DBGSENDING DATA BUSY\n");
 
 	return ESP01_SEND_BUSY;
 }
@@ -304,8 +300,6 @@ void ESP01_Init(_sESP01Handle *hESP01){
 	esp01irRXAT = 0;
 	esp01iwRXAT = 0;
 	esp01Flags.byte = 0;
-	ESP01ChangeState = NULL;
-	ESP01DbgStr = NULL;
 }
 
 
@@ -334,12 +328,12 @@ void ESP01_Task(){
 	ESP01SENDData();
 }
 
-void ESP01_AttachChangeState(void (*aESP01ChangeState)(_eESP01STATUS esp01State)){
-	ESP01ChangeState = aESP01ChangeState;
+void ESP01_AttachChangeState(OnESP01ChangeState aOnESP01ChangeState){
+	aESP01ChangeState = aOnESP01ChangeState;
 }
 
-void ESP01_AttachDebugStr(void (*aESP01DbgStr)(const char *dbgStr)){
-	ESP01DbgStr = aESP01DbgStr;
+void ESP01_AttachDebugStr(ESP01DebugStr aDbgStrPtrFun){
+	aDbgStr = aDbgStrPtrFun;
 }
 
 int ESP01_IsHDRRST(){
@@ -434,101 +428,87 @@ static void ESP01ATDecode(){
 			if(value == '\n'){
 				esp01HState = 0;
 				switch(indexResponse){
-				    case 0://AT
-				    case 1:
-				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: AT");
-				        break;
-				    case 2://OK
-				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: OK");
-				        if(esp01ATSate == ESP01ATRESPONSE){
-				            esp01TimeoutTask = 0;
-				            esp01Flags.bit.ATRESPONSEOK = 1;
-				        }
-				        break;
-				    case 3://ERROR
-				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: ERROR");
-				        if(esp01Flags.bit.SENDINGDATA){
-				            esp01Flags.bit.SENDINGDATA = 0;
-				            esp01Flags.bit.UDPTCPCONNECTED = 0;
-				            esp01irTX = esp01iwTX;
-				        }
-				        break;
-				    case 4://WIFI GOT IP
-				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: WIFI GOT IP");
-				        esp01TimeoutTask = 0;
-				        if(esp01ATSate == ESP01CWJAPRESPONSE)
-				            esp01Flags.bit.ATRESPONSEOK = 1;
-				        esp01Flags.bit.WIFICONNECTED = 1;
-				        if(ESP01ChangeState != NULL)
-				            ESP01ChangeState(ESP01_WIFI_CONNECTED);
-				        break;
-				    case 5://WIFI CONNECTED
-				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: WIFI CONNECTED");
-				        break;
-				    case 6://WIFI DISCONNECT
-				    case 7://WIFI DISCONNECTED
-				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: WIFI DISCONNECT/DISCONNECTED");
-				        esp01Flags.bit.UDPTCPCONNECTED = 0;
-				        esp01Flags.bit.WIFICONNECTED = 0;
-				        if(ESP01ChangeState != NULL)
-				            ESP01ChangeState(ESP01_WIFI_DISCONNECTED);
-				        if(esp01ATSate == ESP01CWJAPRESPONSE)
-				            break;
-				        esp01ATSate = ESP01ATHARDRSTSTOP;
-				        break;
-				    case 8://DISCONNECTED
-				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: DISCONNECTED");
-				        esp01Flags.bit.UDPTCPCONNECTED = 0;
-				        break;
-				    case 9://SEND OK
-				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: SEND OK");
-				        esp01Flags.bit.SENDINGDATA = 0;
-				        if(ESP01ChangeState != NULL)
-				            ESP01ChangeState(ESP01_SEND_OK);
-				        break;
-				    case 10://CONNECT
-				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: CONNECT");
-				        esp01TimeoutTask = 0;
-				        esp01Flags.bit.ATRESPONSEOK = 1;
-				        esp01Flags.bit.UDPTCPCONNECTED = 1;
-				        if(ESP01ChangeState != NULL)
-				            ESP01ChangeState(ESP01_UDPTCP_CONNECTED);
-				        break;
-				    case 11://CLOSED
-				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: CLOSED");
-				        esp01Flags.bit.UDPTCPCONNECTED = 0;
-				        break;
-				    case 13://busy
-				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: BUSY");
-				        esp01Flags.bit.UDPTCPCONNECTED = 0;
-				        esp01Flags.bit.WIFICONNECTED = 0;
-				        break;
-				    case 15://ready
-				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: READY");
-				        esp01Flags.bit.UDPTCPCONNECTED = 0;
-				        esp01Flags.bit.WIFICONNECTED = 0;
-				        esp01ATSate = ESP01ATHARDRSTSTOP;
-				        break;
-				    case 16://busy p
-				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: BUSY P");
-				        break;
-				    case 17://busy s
-				        if (ESP01DbgStr) ESP01DbgStr("+&DBGRESPONSE: BUSY S");
-				        break;
+				case 0://AT
+				case 1:
+					break;
+				case 2://OK
+					if(esp01ATSate == ESP01ATRESPONSE){
+						esp01TimeoutTask = 0;
+						esp01Flags.bit.ATRESPONSEOK = 1;
+					}
+					break;
+				case 3://ERROR
+					if(esp01Flags.bit.SENDINGDATA){
+						esp01Flags.bit.SENDINGDATA = 0;
+						esp01Flags.bit.UDPTCPCONNECTED = 0;
+						esp01irTX = esp01iwTX;
+					}
+					break;
+				case 4://WIFI GOT IP
+					esp01TimeoutTask = 0;
+					if(esp01ATSate == ESP01CWJAPRESPONSE)
+						esp01Flags.bit.ATRESPONSEOK = 1;
+					esp01Flags.bit.WIFICONNECTED = 1;
+					if(aESP01ChangeState != NULL)
+						aESP01ChangeState(ESP01_WIFI_CONNECTED);
+					break;
+				case 5://WIFI CONNECTED
+					break;
+				case 6://WIFI DISCONNECT
+				case 7://WIFI DISCONNECTED
+					esp01Flags.bit.UDPTCPCONNECTED = 0;
+					esp01Flags.bit.WIFICONNECTED = 0;
+					if(aESP01ChangeState != NULL)
+						aESP01ChangeState(ESP01_WIFI_DISCONNECTED);
+					if(esp01ATSate == ESP01CWJAPRESPONSE)
+						break;
+					esp01ATSate = ESP01ATHARDRSTSTOP;
+					break;
+				case 8://DISCONNECTED
+					esp01Flags.bit.UDPTCPCONNECTED = 0;
+					break;
+				case 9://SEND OK
+					esp01Flags.bit.SENDINGDATA = 0;
+					if(aESP01ChangeState != NULL)
+						aESP01ChangeState(ESP01_SEND_OK);
+					break;
+				case 10://CONNECT
+					esp01TimeoutTask = 0;
+					esp01Flags.bit.ATRESPONSEOK = 1;
+					esp01Flags.bit.UDPTCPCONNECTED = 1;
+					if(aESP01ChangeState != NULL)
+						aESP01ChangeState(ESP01_UDPTCP_CONNECTED);
+					break;
+				case 11://CLOSED
+					esp01Flags.bit.UDPTCPCONNECTED = 0;
+					break;
+				case 13://busy
+					esp01Flags.bit.UDPTCPCONNECTED = 0;
+					esp01Flags.bit.WIFICONNECTED = 0;
+					break;
+				case 15://ready
+					esp01Flags.bit.UDPTCPCONNECTED = 0;
+					esp01Flags.bit.WIFICONNECTED = 0;
+					esp01ATSate = ESP01ATHARDRSTSTOP;
+					break;
+				case 16://busy p
+					break;
+				case 17://busy s
+					break;
 				}
 			}
 			break;
 		case 5://CIFR,STAIP
 			if(value == ','){
 				esp01HState = 6;
-				if(ESP01DbgStr != NULL)
-					ESP01DbgStr("+&DBGRESPONSE CIFSR\n");
+				if(aDbgStr != NULL)
+					aDbgStr("+&DBGRESPONSE CIFSR\n");
 			}
 			else{
 				esp01HState = 0;
 				esp01irRXAT--;
-				if(ESP01DbgStr != NULL)
-					ESP01DbgStr("+&DBGERROR CIFSR 5\n");
+				if(aDbgStr != NULL)
+					aDbgStr("+&DBGERROR CIFSR 5\n");
 			}
 			break;
 		case 6:
@@ -553,8 +533,8 @@ static void ESP01ATDecode(){
 				}
 				else
 					esp01LocalIP[0] = '\0';
-				if(ESP01ChangeState != NULL)
-					ESP01ChangeState(ESP01_WIFI_NEW_IP);
+				if(aESP01ChangeState != NULL)
+					aESP01ChangeState(ESP01_WIFI_NEW_IP);
 			}
 			break;
 		case 10://IPD
@@ -582,13 +562,15 @@ static void ESP01ATDecode(){
 			}
 			break;
 		case 12:
-			if(esp01Handle.WriteByteToBufRX != NULL)
-				esp01Handle.WriteByteToBufRX(value);
+			esp01Handle.bufRX[*esp01Handle.iwRX] = value;
+			(*esp01Handle.iwRX)++;
+			if(*esp01Handle.iwRX == esp01Handle.sizeBufferRX)
+				*esp01Handle.iwRX = 0;
 			esp01nBytes--;
 			if(!esp01nBytes){
 				esp01HState = 0;
-				if(ESP01DbgStr != NULL)
-					ESP01DbgStr("+&DBGRESPONSE IPD\n");
+				if(aDbgStr != NULL)
+					aDbgStr("+&DBGRESPONSE IPD\n");
 			}
 			break;
 		default:
@@ -611,19 +593,21 @@ static void ESP01DOConnection(){
 		esp01TimeoutTask = 0;
 		break;
 	case ESP01ATHARDRST0:
-		esp01Handle.DoCHPD(0);
-		if(ESP01DbgStr != NULL)
-			ESP01DbgStr("+&DBGESP01HARDRESET0\n");
+		esp01Handle.aDoCHPD(0);
+		if(aDbgStr)
+			aDbgStr("+&DBGESP01HARDRESET0\n");
 		esp01ATSate = ESP01ATHARDRST1;
 		break;
 	case ESP01ATHARDRST1:
-		esp01Handle.DoCHPD(1);
-		if(ESP01DbgStr != NULL)
-			ESP01DbgStr("+&DBGESP01HARDRESET1\n");
+		esp01Handle.aDoCHPD(1);
+		if(aDbgStr)
+			aDbgStr("+&DBGESP01HARDRESET1\n");
 		esp01ATSate = ESP01ATHARDRSTSTOP;
 		esp01TimeoutTask = 500;
 		break;
 	case ESP01ATHARDRSTSTOP:
+		if(aDbgStr)
+			aDbgStr("\r\n>>> ESP01: Hard reset complete, moving to AT sequence <<<\r\n");
 		esp01ATSate = ESP01ATAT;
 		esp01TriesAT = 0;
 		break;
@@ -640,26 +624,31 @@ static void ESP01DOConnection(){
 
 		esp01Flags.bit.ATRESPONSEOK = 0;
 		ESP01StrToBufTX(ATAT);
-		if(ESP01DbgStr != NULL)
-			ESP01DbgStr("+&DBGESP01AT\n");
+		if(aDbgStr != NULL)
+			aDbgStr("+&DBGESP01AT\n");
 		esp01ATSate = ESP01ATRESPONSE;
 		break;
 	case ESP01ATRESPONSE:
-		if(esp01Flags.bit.ATRESPONSEOK)
+		if(esp01Flags.bit.ATRESPONSEOK) {
+			if(aDbgStr)
+				aDbgStr("\r\n+++ ESP01: Received OK for AT +++\r\n");
 			esp01ATSate = ESP01ATCWMODE;
-		else
+		} else {
+			if(aDbgStr)
+				aDbgStr("\r\nxxx ESP01: No OK for AT, retrying... xxx\r\n");
 			esp01ATSate = ESP01ATAT;
+		}
 		break;
 	case ESP01ATCWMODE:
 		ESP01StrToBufTX(ATCWMODE);
-		if(ESP01DbgStr != NULL)
-			ESP01DbgStr("+&DBGESP01ATCWMODE\n");
+		if(aDbgStr)
+			aDbgStr("+&DBGESP01ATCWMODE\n");
 		esp01ATSate = ESP01ATCIPMUX;
 		break;
 	case ESP01ATCIPMUX:
 		ESP01StrToBufTX(ATCIPMUX);
-		if(ESP01DbgStr != NULL)
-			ESP01DbgStr("+&DBGESP01ATCIPMUX\n");
+		if(aDbgStr)
+			aDbgStr("+&DBGESP01ATCIPMUX\n");
 		esp01ATSate = ESP01ATCWJAP;
 		break;
 	case ESP01ATCWJAP:
@@ -679,32 +668,43 @@ static void ESP01DOConnection(){
 		ESP01ByteToBufTX('\"');
 		ESP01ByteToBufTX('\r');
 		ESP01ByteToBufTX('\n');
-		if(ESP01DbgStr != NULL)
-			ESP01DbgStr("+&DBGESP01ATCWJAP\n");
+		if(aDbgStr)
+			aDbgStr("+&DBGESP01ATCWJAP\n");
 		esp01Flags.bit.ATRESPONSEOK = 0;
 		esp01ATSate = ESP01CWJAPRESPONSE;
 		esp01TimeoutTask = 1500;
 		break;
 	case ESP01CWJAPRESPONSE:
 		if(esp01Flags.bit.ATRESPONSEOK){
+			if (aDbgStr) {
+				aDbgStr("\r\n+++ ESP01: Joined AP successfully +++\r\n");
+			}
 			esp01ATSate = ESP01ATCIFSR;
 			esp01TriesAT = 4;
-		}
-		else
+		} else {
+			if (aDbgStr) {
+				aDbgStr("\r\nxxx ESP01: Failed to join AP, retrying AT... xxx\r\n");
+			}
 			esp01ATSate = ESP01ATAT;
+		}
 		break;
 	case ESP01ATCIFSR:
 		esp01LocalIP[0] = '\0';
 		ESP01StrToBufTX(ATCIFSR);
-		if(ESP01DbgStr != NULL)
-			ESP01DbgStr("+&DBGESP01CIFSR\n");
+		if(aDbgStr)
+			aDbgStr("+&DBGESP01CIFSR\n");
 		esp01Flags.bit.ATRESPONSEOK = 0;
 		esp01ATSate = ESP01CIFSRRESPONSE;
 		break;
 	case ESP01CIFSRRESPONSE:
-		if(esp01Flags.bit.ATRESPONSEOK)
+		if(esp01Flags.bit.ATRESPONSEOK) {
+			if (aDbgStr) {
+				aDbgStr("\r\n+++ ESP01: Local IP received: ");
+				aDbgStr(esp01LocalIP);
+				aDbgStr(" +++\r\n");
+			}
 			esp01ATSate = ESP01ATCIPCLOSE;
-		else{
+		} else {
 			esp01TriesAT--;
 			if(esp01TriesAT == 0){
 				esp01ATSate = ESP01ATAT;
@@ -717,8 +717,8 @@ static void ESP01DOConnection(){
 		if(esp01RemoteIP[0] == '\0')
 			break;
 		ESP01StrToBufTX(ATCIPCLOSE);
-		if(ESP01DbgStr != NULL)
-			ESP01DbgStr("+&DBGESP01ATCIPCLOSE\n");
+		if(aDbgStr)
+			aDbgStr("+&DBGESP01ATCIPCLOSE\n");
 		esp01ATSate = ESP01ATCIPSTART;
 		break;
 	case ESP01ATCIPSTART:
@@ -738,8 +738,13 @@ static void ESP01DOConnection(){
 		ESP01ByteToBufTX('0');
 		ESP01ByteToBufTX('\r');
 		ESP01ByteToBufTX('\n');
-		if(ESP01DbgStr != NULL)
-			ESP01DbgStr("+&DBGESP01ATCIPSTART\n");
+		if(aDbgStr){
+			char buf[80];
+			snprintf(buf, sizeof(buf),
+					 "\r\n--- ESP01: AT → CIPSTART (%s to %s:%s) ---\r\n",
+					 esp01PROTO, esp01RemoteIP, esp01RemotePORT);
+			aDbgStr(buf);
+		}
 		esp01Flags.bit.ATRESPONSEOK = 0;
 		esp01Flags.bit.UDPTCPCONNECTED = 0;
 		esp01ATSate = ESP01CIPSTARTRESPONSE;
@@ -762,18 +767,6 @@ static void ESP01DOConnection(){
 		}
 		esp01TimeoutTask = 0;
 		break;
-	case ESP01ATCIPSERVER:
-		ESP01StrToBufTX(ATCIPSERVER);
-		ESP01StrToBufTX(esp01LocalPORT);
-		ESP01ByteToBufTX('\r');
-		ESP01ByteToBufTX('\n');
-		if (ESP01DbgStr != NULL)
-			ESP01DbgStr("+&DBGESP01ATCIPSERVER\n");
-
-		esp01ATSate = ESP01ATCONNECTED;  // ya estamos listos
-		esp01TimeoutTask = 100;
-		break;
-
 	}
 }
 
@@ -795,7 +788,7 @@ static void ESP01SENDData(){
 			if(value == '>')
 				value = '\n';
 		}
-		if(esp01Handle.WriteUSARTByte(value)){
+		if(esp01Handle.aWriteUSARTByte(value)){
 			if(esp01Flags.bit.TXCIPSEND){
 				if(esp01TXATBuf[esp01irTX] == '>'){
 					esp01Flags.bit.TXCIPSEND = 0;
@@ -824,19 +817,9 @@ static void ESP01ByteToBufTX(uint8_t value){
 		esp01iwTX = 0;
 }
 
-_eESP01STATUS ESP01_StartTCPServer(uint16_t port){
-	if(esp01Handle.WriteUSARTByte == NULL)
-		return ESP01_NOT_INIT;
 
-	if(esp01SSID[0] == '\0')
-		return ESP01_WIFI_NOT_SETED;
 
-	if(esp01Flags.bit.WIFICONNECTED == 0)
-		return ESP01_WIFI_DISCONNECTED;
 
-	itoa(port, esp01LocalPORT, 10);
-	esp01ATSate = ESP01ATCIPSERVER;
-	return ESP01_UDPTCP_CONNECTING;
-}
 
-#endif /* SRC_ESP01_C_ */
+
+/* END Private Functions*/
