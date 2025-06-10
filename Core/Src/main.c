@@ -59,6 +59,8 @@ UART_HandleTypeDef huart2;
 /* USER CODE BEGIN PV */
 uint8_t BufUSBTx[256], nBytesTx;
 
+extern USBD_HandleTypeDef hUsbDeviceFS;
+
 uint8_t is250us, tmo100ms, is10ms;
 
 uint8_t dataTx, dataRx, ESPSend;
@@ -76,6 +78,8 @@ uint8_t adcCounter = 0;
 
 static uint8_t esp01RxBuf[ESP01RXBUFAT];
 static uint16_t esp01IwRx = 0;
+
+static uint16_t esp01IrRx = 0;		/* Índice de lectura para el buffer UDP entrante */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -124,6 +128,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART1) {
         ESP01_WriteRX(dataRx);      // Sube byte al buffer AT
+        ESP01_Task();    // dentro hace ESP01ATDecode()
         HAL_UART_Receive_IT(&huart1, &dataRx, 1);
     }
 }
@@ -158,7 +163,7 @@ void onESP01StateChange(_eESP01STATUS state) {
         case ESP01_UDPTCP_CONNECTED:
             ESP01_USB_DbgStr("\r\n+++ ESP01: UDP Connection Established +++\r\n");
             if (ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED) {
-				const char msg[] = "Ping desde ESP01\r\n";
+				const char msg[] = "ALIVE\r\n";
 				//ESP01_USB_DbgStr("\r\n>>> ESP01: Sending periodic ping <<<\r\n");
 				ESP01_Send((uint8_t*)msg, 0, sizeof(msg)-1, sizeof(msg)-1);
 			  }
@@ -174,8 +179,9 @@ void onESP01StateChange(_eESP01STATUS state) {
 
 
 void ESP01_USB_DbgStr(const char *dbgStr) {
-    uint16_t len = strlen(dbgStr);
-    if (len) CDC_Transmit_FS((uint8_t*)dbgStr, len);
+    if (hUsbDeviceFS.dev_state == USBD_STATE_CONFIGURED) {
+        CDC_Transmit_FS((uint8_t*)dbgStr, strlen(dbgStr));
+    }
 }
 
 //void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
@@ -298,6 +304,19 @@ int main(void)
 
 		  ESP01_Timeout10ms();  // Requerido por la librería ESP01
 		  ESP01_Task(); // Procesa tramas ESP01 recibidas
+
+		  // Volcar cada byte en HEX
+		  while (esp01IrRx != esp01IwRx) {
+			  uint8_t b = esp01RxBuf[esp01IrRx++];
+			  if (esp01IrRx >= sizeof(esp01RxBuf)) esp01IrRx = 0;
+
+			  char hex[4];
+			  int len = snprintf(hex, sizeof(hex), "%02X ", b);
+			  if (hUsbDeviceFS.dev_state == USBD_STATE_CONFIGURED) {
+				  CDC_Transmit_FS((uint8_t*)hex, len);
+			  }
+		  }
+
 		  UNER_Task(); // Procesa tramas UNER recibidas
 
 		  tmo100ms--;

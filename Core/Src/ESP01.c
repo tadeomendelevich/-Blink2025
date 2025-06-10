@@ -548,8 +548,18 @@ static void ESP01ATDecode(){
 			}
 			break;
 		case 11:
-			if(value == ':')
+			if (value == ':') {
 				esp01HState = 12;
+				esp01TimeoutDataRx = esp01nBytes + 2;  	// Extiendo el timeout en función de la longitud esperada
+				if (aDbgStr) {
+					char dbg[64];
+					int L = sprintf(dbg,
+						"\r\n+++ ESP01: Expecting %u bytes of payload +++\r\n",
+						(unsigned)esp01nBytes);
+					dbg[L] = '\0';
+					aDbgStr(dbg);
+				}
+			}
 			else{
 				if(value<'0' || value>'9'){
 					esp01HState = 0;
