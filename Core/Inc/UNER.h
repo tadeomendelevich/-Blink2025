@@ -96,4 +96,6 @@ uint8_t putStrOntx(_sTx *dataTx, const char *str);
 
 void decodeCommand(_sRx *dataRx, _sTx *dataTx);
 
+void UNER_Debug(const char *fmt, ...);
+
 #endif /* ESP01_H_ */

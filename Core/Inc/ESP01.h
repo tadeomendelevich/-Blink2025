@@ -66,6 +66,10 @@ typedef struct{
 	uint16_t			    sizeBufferRX;		  /**< Tamaño en bytes del buffer de recepción*/
 } _sESP01Handle;
 
+#define ESP_USB_BUF_SIZE 512
+extern uint8_t  espUSBBuf[ESP_USB_BUF_SIZE];
+extern volatile uint16_t espUSBBufIw, espUSBBufIr;
+
 
 /**
  * @brief ESP01_WIFI Configura y Conecta
@@ -206,5 +210,6 @@ void ESP01_AttachDebugStr(ESP01DebugStr aDbgStrPtrFun);
 
 int ESP01_IsHDRRST();
 
+void USB_BufferPush(uint8_t b);
 
 #endif /* ESP01_H_ */

@@ -10,12 +10,23 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include <stdarg.h>       // para va_list, va_start, va_end
+#include <stdio.h>        // para vsnprintf
+#include "usbd_cdc_if.h"  // para CDC_Transmit_FS
+#include "usbd_core.h"    // para USBD_HandleTypeDef, USBD_STATE_CONFIGURED
+
 const char *firmware = "UNER V1.0";
 
 uint16_t globalIndex = 0;
 
 static _sRx *unerRx;
 static _sTx *unerTx;
+
+// buffer temporal para formateo
+static char dbgBuf[128];
+
+// Prototipo externo de estado USB (ya lo tienes en main.c)
+extern USBD_HandleTypeDef hUsbDeviceFS;
 
 void UNER_Init(_sRx *rx, _sTx *tx) {
     unerRx = rx;
@@ -92,6 +103,7 @@ void UNER_Task(void) {
                 }
                 break;
             case PAYLOAD:
+            	UNER_Debug("  payload byte, remaining=%u chk=0x%02X\n", unerRx->nBytes, unerRx->chk);
                 unerRx->nBytes--;
                 if (unerRx->nBytes > 0) {
                     unerRx->chk ^= unerRx->buff[unerRx->indexR];
@@ -183,10 +195,13 @@ uint8_t putStrOntx(_sTx *dataTx, const char *str)
 
 void decodeCommand(_sRx *dataRx, _sTx *dataTx)
 {
+	// Marca el índice inicial antes de escribir el comando
+	uint8_t txStart = dataTx->indexW;
+
     switch(dataRx->buff[dataRx->indexData]){
         case ALIVE:
             putHeaderOnTx(dataTx, ALIVE, 2);
-            putByteOnTx(dataTx, ACK );
+            putByteOnTx(dataTx, ACK);
             putByteOnTx(dataTx, dataTx->chk);
         break;
         case FIRMWARE:
@@ -200,6 +215,32 @@ void decodeCommand(_sRx *dataRx, _sTx *dataTx)
             putByteOnTx(dataTx, dataTx->chk);
         break;
     }
+
+    // Índice tras escribir todos los bytes
+   uint8_t txEnd = dataTx->indexW;
+
+   // Imprime por USB los bytes del paquete en formato hex
+   UNER_Debug("UNER TX [%u→%u]: ", txStart, txEnd);
+   uint8_t i = txStart;
+   while (i != txEnd) {
+	   UNER_Debug("%02X ", dataTx->buff[i]);
+	   i = (i + 1) & dataTx->mask;
+   }
+   UNER_Debug("\r\n");
 }
 
+void UNER_Debug(const char *fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    int len = vsnprintf(dbgBuf, sizeof(dbgBuf), fmt, args);
+    va_end(args);
+
+    // sólo si el USB está configurado
+    if (hUsbDeviceFS.dev_state == USBD_STATE_CONFIGURED && len > 0)
+    {
+        // vsnprintf no añade '\0' en len posiciones, pero CDC_Transmit_FS necesita contar bytes
+        CDC_Transmit_FS((uint8_t*)dbgBuf, (uint16_t)len);
+    }
+}
 /* END Private Functions*/

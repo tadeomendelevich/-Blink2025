@@ -361,6 +361,9 @@ static void ESP01ATDecode(){
 	esp01TimeoutDataRx = 2;
 	while(esp01irRXAT != i){
 		value = esp01RXATBuf[esp01irRXAT];
+
+		USB_BufferPush(value);
+
 		switch(esp01HState){
 		case 0:
             indexResponse = 0;

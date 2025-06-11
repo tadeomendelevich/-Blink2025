@@ -39,6 +39,7 @@
 /* USER CODE BEGIN PD */
 #define CH_PD_Pin        GPIO_PIN_11
 #define CH_PD_GPIO_Port  GPIOB
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -80,6 +81,11 @@ static uint8_t esp01RxBuf[ESP01RXBUFAT];
 static uint16_t esp01IwRx = 0;
 
 static uint16_t esp01IrRx = 0;		/* Índice de lectura para el buffer UDP entrante */
+
+
+uint8_t  espUSBBuf[ESP_USB_BUF_SIZE];
+volatile uint16_t espUSBBufIw, espUSBBufIr;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -97,10 +103,16 @@ static int  uart_send_byte(uint8_t byte);
 static void esp01_chpd(uint8_t val);
 void onESP01StateChange(_eESP01STATUS state);
 void ESP01_USB_DbgStr(const char *dbgStr);
+void USB_BufferPush(uint8_t b);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+void USB_BufferPush(uint8_t b){
+    espUSBBuf[espUSBBufIw++] = b;
+    espUSBBufIw &= (ESP_USB_BUF_SIZE - 1);
+}
+
 void USBRxData(uint8_t *buf, int len) {
 	BufUSBTx[0] = 'U';
 	BufUSBTx[1] = 'S';
@@ -128,7 +140,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART1) {
         ESP01_WriteRX(dataRx);      // Sube byte al buffer AT
-        ESP01_Task();    // dentro hace ESP01ATDecode()
+        //ESP01_Task();    // dentro hace ESP01ATDecode()
         HAL_UART_Receive_IT(&huart1, &dataRx, 1);
     }
 }
@@ -305,16 +317,20 @@ int main(void)
 		  ESP01_Timeout10ms();  // Requerido por la librería ESP01
 		  ESP01_Task(); // Procesa tramas ESP01 recibidas
 
-		  // Volcar cada byte en HEX
+		  if (espUSBBufIr != espUSBBufIw) {
+		      uint8_t tmp[64];
+		      uint16_t cnt = 0;
+		      while (espUSBBufIr != espUSBBufIw && cnt < sizeof(tmp)) {
+		          tmp[cnt++] = espUSBBuf[espUSBBufIr++];
+		          espUSBBufIr &= (ESP_USB_BUF_SIZE - 1);
+		      }
+		      CDC_Transmit_FS(tmp, cnt);
+		  }
+
 		  while (esp01IrRx != esp01IwRx) {
 			  uint8_t b = esp01RxBuf[esp01IrRx++];
-			  if (esp01IrRx >= sizeof(esp01RxBuf)) esp01IrRx = 0;
-
-			  char hex[4];
-			  int len = snprintf(hex, sizeof(hex), "%02X ", b);
-			  if (hUsbDeviceFS.dev_state == USBD_STATE_CONFIGURED) {
-				  CDC_Transmit_FS((uint8_t*)hex, len);
-			  }
+			  esp01IrRx &= (ESP01RXBUFAT - 1);   // wrap-around
+			  UNER_PushByte(b);                  // turn5file2: UNER_PushByte guarda en unerRx->buff[]
 		  }
 
 		  UNER_Task(); // Procesa tramas UNER recibidas
