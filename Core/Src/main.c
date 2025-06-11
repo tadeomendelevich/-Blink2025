@@ -27,7 +27,6 @@
 #include "UNER.h"
 #include "usbd_cdc_if.h"
 #include "fonts.h"
-#include "ssd1306.h"
 #include "MPU6050.h"
 /* USER CODE END Includes */
 
@@ -69,7 +68,7 @@ extern USBD_HandleTypeDef hUsbDeviceFS;
 
 uint8_t is250us, tmo100ms, is10ms;
 
-uint8_t dataTx, dataRx, ESPSend;
+uint8_t dataTx, dataRx;
 
 static uint8_t unerRxBuffer[RXBUFSIZE];
 static uint8_t unerTxBuffer[TXBUFSIZE];
@@ -103,6 +102,9 @@ uint8_t showMpuData = 0;
 
 static const char HEX_DIGITS[] = "0123456789ABCDEF";	// Tabla de dígitos hex
 
+static uint16_t pingCounter;
+
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -124,14 +126,6 @@ void ESP01_USB_DbgStr(const char *dbgStr);
 void USB_BufferPush(uint8_t b);
 
 
-void my_ssd1306_init(void *ctx);
-int my_ssd1306_write_cmd(void *ctx, uint8_t cmd);
-int my_ssd1306_write_data(void *ctx, const uint8_t *data, uint16_t len);
-int my_ssd1306_write_data_async(void *ctx, const uint8_t *data, uint16_t len);
-uint8_t my_ssd1306_is_busy(void *ctx);
-void my_ssd1306_errorCb(void *ctx, int err);
-void my_ssd1306_delay_ms(void *ctx, uint32_t ms);
-
 int  mpu_writeReg(void   *ctx, uint8_t devAddr, uint8_t regAddr, uint8_t *data, uint16_t length);
 int  mpu_readReg(void   *ctx, uint8_t devAddr, uint8_t regAddr, uint8_t *data, uint16_t length);
 int  mpu_readRegDMA(void   *ctx, uint8_t devAddr, uint8_t regAddr, uint8_t *data, uint16_t length);
@@ -150,22 +144,6 @@ void USB_Debug(const char *fmt, ...);	// Mini-printf para debug: soporta %s, %c,
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-SSD1306_Ctx_t ssd_ctx = {
-  .hi2c      = &hi2c1,
-  .busy_flag = &i2c1_tx_busy
-};
-
-static SSD1306_Platform_t SSD1306_plat = {
-  .ctx              = &ssd_ctx,
-  .init             = my_ssd1306_init,
-  .write_cmd        = my_ssd1306_write_cmd,
-  .write_data       = my_ssd1306_write_data,
-  .write_data_async = my_ssd1306_write_data_async,
-  .is_busy          = my_ssd1306_is_busy,
-  .delay_ms         = my_ssd1306_delay_ms,
-  .onError          = my_ssd1306_errorCb
-};
-
 MPU6050_Platform_t mpuPlat = {
   .ctx         = &hi2c1,
   .writeReg    = mpu_writeReg,
@@ -174,91 +152,6 @@ MPU6050_Platform_t mpuPlat = {
   .delayMs     = mpu_delayMs,
   .onError    = mpu_errorCb
 };
-
-void my_ssd1306_init(void *ctx) {
-    MX_I2C1_Init();
-}
-
-// Callback comando
-int my_ssd1306_write_cmd(void *ctx, uint8_t cmd) {
-    HAL_StatusTypeDef st = HAL_I2C_Master_Transmit(&hi2c1, SSD1306_I2C_ADDR, (uint8_t[]){0x00, cmd}, 2, HAL_MAX_DELAY);
-
-    if (st != HAL_OK) {
-        SSD1306_plat.onError(ctx, (int)st);
-        return -1;
-    }
-    return 0;
-}
-
-
-// Callback datos bloqueante
-int my_ssd1306_write_data(void *ctx, const uint8_t *data, uint16_t len) {
-    // Desempaquetar el contexto
-    SSD1306_Ctx_t *c = (SSD1306_Ctx_t*)ctx;
-    // Preparo buffer con control byte + datos
-    uint8_t buf[1 + SSD1306_WIDTH];
-    buf[0] = 0x40;
-    memcpy(&buf[1], data, len);
-    // Transmisión bloqueante
-    HAL_StatusTypeDef st = HAL_I2C_Master_Transmit(
-        c->hi2c,
-        SSD1306_I2C_ADDR,
-        buf,
-        len + 1,
-        HAL_MAX_DELAY
-    );
-    if (st != HAL_OK) {
-        // Notifico el fallo (p.ej. por USB y LED)
-        SSD1306_plat.onError(ctx, (int)st);
-        return -1;
-    }
-    return 0;
-}
-
-// Callback datos no bloqueante (DMA)
-int my_ssd1306_write_data_async(void *ctx, const uint8_t *data, uint16_t len) {
-    SSD1306_Ctx_t *c = (SSD1306_Ctx_t*)ctx;
-    // 1) Si el bus está ocupado, lanza error
-    if (*c->busy_flag) {
-        SSD1306_plat.onError(ctx, -1);     // -1 = BUSY_ERROR
-        return -1;
-    }
-
-    // 2) Preparo buffer (control byte + datos)
-    static uint8_t dmaBuf[1 + SSD1306_WIDTH];
-    dmaBuf[0] = 0x40;
-    memcpy(&dmaBuf[1], data, len);
-
-    // 3) Marco el bus como ocupado
-    *c->busy_flag = 1;
-
-    // 4) Lanzo la DMA
-    HAL_StatusTypeDef st = HAL_I2C_Master_Transmit_DMA(c->hi2c, SSD1306_I2C_ADDR, dmaBuf,len + 1);
-    if (st != HAL_OK) {
-        // si falla al arrancar, limpio flag y notifico
-        *c->busy_flag = 0;
-        SSD1306_plat.onError(ctx, (int)st);
-        return -1;
-    }
-    return 0;
-}
-
-
-// Callback busy-check
-uint8_t my_ssd1306_is_busy(void *ctx) {
-    return i2c1_tx_busy ? 1 : 0;
-}
-
-void my_ssd1306_errorCb(void *ctx, int err) {
-    USB_Debug("ERROR SSD1306: 0x%02X\r\n", err);
-    i2c1_tx_busy = 0;
-	SSD1306_ResetUpdateState();
-}
-
-// Callback delay
-void my_ssd1306_delay_ms(void *ctx, uint32_t ms) {
-    HAL_Delay(ms);
-}
 
 void HAL_I2C_MasterTxCpltCallback(I2C_HandleTypeDef *hi2c) {
 	if (hi2c->Instance == I2C1) {
@@ -377,8 +270,8 @@ void onESP01StateChange(_eESP01STATUS state) {
         case ESP01_UDPTCP_CONNECTED:
             ESP01_USB_DbgStr("\r\n+++ ESP01: UDP Connection Established +++\r\n");
             if (ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED) {
-				char msg[] = "ALIVE\r\n";
-				//ESP01_USB_DbgStr("\r\n>>> ESP01: Sending periodic ping <<<\r\n");
+				const char msg[] = "ALIVE\r\n";
+				ESP01_USB_DbgStr("\r\n>>> ESP01: Sending periodic ping <<<\r\n");
 				ESP01_Send((uint8_t*)msg, 0, sizeof(msg)-1, sizeof(msg)-1);
 			  }
             break;
@@ -580,20 +473,6 @@ int main(void)
   unerTx.mask = TXBUFSIZE - 1;
   UNER_Init(&unerRx, &unerTx);
 
-  HAL_Delay(500);
-  SSD1306_RegisterPlatform(&SSD1306_plat);
-  SSD1306_Init();
-
-  SSD1306_GotoXY(35, 5);
-  SSD1306_Puts("TADEO",   &Font_7x10, SSD1306_COLOR_WHITE);
-  SSD1306_GotoXY(5, 35);
-  SSD1306_Puts("MENDELEVICH",&Font_7x10, SSD1306_COLOR_WHITE);
-
-  SSD1306_UpdateScreen_Blocking();
-  HAL_Delay(3000);
-  SSD1306_Fill(SSD1306_COLOR_BLACK);
-  SSD1306_UpdateScreen_Blocking();
-
   MPU6050_RegisterPlatform(&mpuPlat);
   int status = MPU6050_Init();
   if (status != MPU6050_OK) {
@@ -607,7 +486,7 @@ int main(void)
   tmo100ms = 10;
   is250us = 0;
   is10ms = 0;
-  ESPSend = 0;
+  pingCounter = 0;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -624,19 +503,27 @@ int main(void)
 	  if(is10ms) {
 		  is10ms = 0;
 
-		  /*ESPCounter++;
-		  if (ESPCounter >= 100) {
-			  ESPCounter = 0;
-			  // Solo si ya estamos conectados UDP
+		  pingCounter++;
+		  if (pingCounter >= 500) {	// —— Envío de ALIVE periodico ——
+			  pingCounter = 0;
 			  if (ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED) {
-				  const char msg[] = "Ping desde ESP01\r\n";
-				  //ESP01_USB_DbgStr("\r\n>>> ESP01: Sending periodic ping <<<\r\n");
-				  ESP01_Send((uint8_t*)msg, 0, sizeof(msg)-1, sizeof(msg)-1);
-			  }
-		  }*/
+			  // 1) Reinicio índices y checksum
+			  unerTx.indexW = 0;
+			  unerTx.chk    = 0;
+
+			  // 2) Ensamblo el paquete UNER “ALIVE”
+			  putHeaderOnTx(&unerTx, ALIVE, 2);
+			  putByteOnTx(&unerTx, ACK);
+			  putByteOnTx(&unerTx, unerTx.chk);
+
+			  // 3) Envío la trama completa
+			  ESP01_Send(unerTx.buff,  0, unerTx.indexW, unerTx.indexW);
+		  }
+		  }
 
 		  ESP01_Timeout10ms();  // Requerido por la librería ESP01
 		  ESP01_Task(); // Procesa tramas ESP01 recibidas
+
 
 		  if (espUSBBufIr != espUSBBufIw) {
 		      uint8_t tmp[64];
@@ -696,52 +583,11 @@ int main(void)
 
 	  }*/
 
-	  if (showMpuData && SSD1306_IsUpdateDone()) {
+	  if (showMpuData) {
 		  showMpuData = 0;
-
 		  MPU6050_GetAccel(&ax, &ay, &az);
 		  MPU6050_GetGyro(&gx, &gy, &gz);
-
-		  SSD1306_Fill(SSD1306_COLOR_BLACK);
-
-		  SSD1306_GotoXY(0, 0);
-		  SSD1306_Puts("Valores MPU6050:", &Font_7x10, SSD1306_COLOR_WHITE);
-
-		  SSD1306_GotoXY(0, 20);
-		  SSD1306_Puts("AX:", &Font_7x10, SSD1306_COLOR_WHITE);
-		  char num[7];
-		  itoa(ax, num, 10);
-		  SSD1306_Puts(num, &Font_7x10, SSD1306_COLOR_WHITE);
-		  SSD1306_Puts(" AY:", &Font_7x10, SSD1306_COLOR_WHITE);
-		  itoa(ay, num, 10);
-		  SSD1306_Puts(num, &Font_7x10, SSD1306_COLOR_WHITE);
-
-		  // Fila 2: AZ
-		  SSD1306_GotoXY(0, 30);
-		  SSD1306_Puts("AZ:", &Font_7x10, SSD1306_COLOR_WHITE);
-		  itoa(az, num, 10);
-		  SSD1306_Puts(num, &Font_7x10, SSD1306_COLOR_WHITE);
-
-		  // Fila 3: GX, GY
-		  SSD1306_GotoXY(0, 40);
-		  SSD1306_Puts("GX:", &Font_7x10, SSD1306_COLOR_WHITE);
-		  itoa(gx, num, 10);
-		  SSD1306_Puts(num, &Font_7x10, SSD1306_COLOR_WHITE);
-		  SSD1306_Puts(" GY:", &Font_7x10, SSD1306_COLOR_WHITE);
-		  itoa(gy, num, 10);
-		  SSD1306_Puts(num, &Font_7x10, SSD1306_COLOR_WHITE);
-
-		  // Fila 4: GZ
-		  SSD1306_GotoXY(0, 50);
-		  SSD1306_Puts("GZ:", &Font_7x10, SSD1306_COLOR_WHITE);
-		  itoa(gz, num, 10);
-		  SSD1306_Puts(num, &Font_7x10, SSD1306_COLOR_WHITE);
-
-		  SSD1306_RequestUpdate();
 	  }
-
-	  SSD1306_UpdateScreen();
-
 
 	  if (unerTx.indexR != unerTx.indexW && ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED) {
 	      uint8_t dataToSend[TXBUFSIZE];
