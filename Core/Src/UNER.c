@@ -11,11 +11,11 @@
 #include <stdlib.h>
 
 #include <stdarg.h>       // para va_list, va_start, va_end
-#include <stdio.h>        // para vsnprintf
+//#include <stdio.h>        // para vsnprintf
 #include "usbd_cdc_if.h"  // para CDC_Transmit_FS
 #include "usbd_core.h"    // para USBD_HandleTypeDef, USBD_STATE_CONFIGURED
 
-const char *firmware = "UNER V1.0";
+char *firmware = "UNER V1.0";
 
 uint16_t globalIndex = 0;
 
@@ -23,7 +23,7 @@ static _sRx *unerRx;
 static _sTx *unerTx;
 
 // buffer temporal para formateo
-static char dbgBuf[128];
+//static char dbgBuf[128];
 
 // Prototipo externo de estado USB (ya lo tienes en main.c)
 extern USBD_HandleTypeDef hUsbDeviceFS;
@@ -103,7 +103,7 @@ void UNER_Task(void) {
                 }
                 break;
             case PAYLOAD:
-            	UNER_Debug("  payload byte, remaining=%u chk=0x%02X\n", unerRx->nBytes, unerRx->chk);
+            	//UNER_Debug("  payload byte, remaining=%u chk=0x%02X\n", unerRx->nBytes, unerRx->chk);
                 unerRx->nBytes--;
                 if (unerRx->nBytes > 0) {
                     unerRx->chk ^= unerRx->buff[unerRx->indexR];
@@ -126,7 +126,7 @@ void UNER_Task(void) {
 
 void UNER_Send(uint8_t cmd, const uint8_t *payload, uint8_t length) {
     uint8_t chk = 0;
-    const char header[] = { 'U', 'N', 'E', 'R' };
+    char header[] = { 'U', 'N', 'E', 'R' };
 
     for (int i = 0; i < 4; i++) {
         unerTx->buff[unerTx->indexW++] = header[i];
@@ -195,8 +195,8 @@ uint8_t putStrOntx(_sTx *dataTx, const char *str)
 
 void decodeCommand(_sRx *dataRx, _sTx *dataTx)
 {
-	// Marca el índice inicial antes de escribir el comando
-	uint8_t txStart = dataTx->indexW;
+	/*// Marca el índice inicial antes de escribir el comando
+	uint8_t txStart = dataTx->indexW;*/
 
     switch(dataRx->buff[dataRx->indexData]){
         case ALIVE:
@@ -216,7 +216,7 @@ void decodeCommand(_sRx *dataRx, _sTx *dataTx)
         break;
     }
 
-    // Índice tras escribir todos los bytes
+   /* // Índice tras escribir todos los bytes
    uint8_t txEnd = dataTx->indexW;
 
    // Imprime por USB los bytes del paquete en formato hex
@@ -226,10 +226,10 @@ void decodeCommand(_sRx *dataRx, _sTx *dataTx)
 	   UNER_Debug("%02X ", dataTx->buff[i]);
 	   i = (i + 1) & dataTx->mask;
    }
-   UNER_Debug("\r\n");
+   UNER_Debug("\r\n");*/
 }
 
-void UNER_Debug(const char *fmt, ...)
+/*void UNER_Debug(const char *fmt, ...)
 {
     va_list args;
     va_start(args, fmt);
@@ -242,5 +242,5 @@ void UNER_Debug(const char *fmt, ...)
         // vsnprintf no añade '\0' en len posiciones, pero CDC_Transmit_FS necesita contar bytes
         CDC_Transmit_FS((uint8_t*)dbgBuf, (uint16_t)len);
     }
-}
+}*/
 /* END Private Functions*/

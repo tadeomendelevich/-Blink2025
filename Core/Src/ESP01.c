@@ -9,7 +9,6 @@
 #include <stddef.h>
 #include <string.h>
 #include <stdlib.h>
-#include <stdio.h>
 
 
 static enum {
@@ -554,14 +553,14 @@ static void ESP01ATDecode(){
 			if (value == ':') {
 				esp01HState = 12;
 				esp01TimeoutDataRx = esp01nBytes + 2;  	// Extiendo el timeout en función de la longitud esperada
-				if (aDbgStr) {
+				/*if (aDbgStr) {
 					char dbg[64];
 					int L = sprintf(dbg,
 						"\r\n+++ ESP01: Expecting %u bytes of payload +++\r\n",
 						(unsigned)esp01nBytes);
 					dbg[L] = '\0';
 					aDbgStr(dbg);
-				}
+				}*/
 			}
 			else{
 				if(value<'0' || value>'9'){
@@ -751,13 +750,13 @@ static void ESP01DOConnection(){
 		ESP01ByteToBufTX('0');
 		ESP01ByteToBufTX('\r');
 		ESP01ByteToBufTX('\n');
-		if(aDbgStr){
+		/*if(aDbgStr){
 			char buf[80];
 			snprintf(buf, sizeof(buf),
 					 "\r\n--- ESP01: AT → CIPSTART (%s to %s:%s) ---\r\n",
 					 esp01PROTO, esp01RemoteIP, esp01RemotePORT);
 			aDbgStr(buf);
-		}
+		}*/
 		esp01Flags.bit.ATRESPONSEOK = 0;
 		esp01Flags.bit.UDPTCPCONNECTED = 0;
 		esp01ATSate = ESP01CIPSTARTRESPONSE;

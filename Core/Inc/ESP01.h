@@ -55,6 +55,7 @@ typedef void (*ESP01DebugStr)(const char *dbgStr);
 
 #define ESP01RXBUFAT		128
 #define ESP01TXBUFAT		256
+#define ESP_USB_BUF_SIZE 	256
 
 
 /**< Inicializa el driver ESP01 UDP */
@@ -66,8 +67,8 @@ typedef struct{
 	uint16_t			    sizeBufferRX;		  /**< Tamaño en bytes del buffer de recepción*/
 } _sESP01Handle;
 
-#define ESP_USB_BUF_SIZE 512
 extern uint8_t  espUSBBuf[ESP_USB_BUF_SIZE];
+
 extern volatile uint16_t espUSBBufIw, espUSBBufIr;
 
 

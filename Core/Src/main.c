@@ -22,12 +22,13 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdarg.h>
 #include "ESP01.h"
 #include "UNER.h"
-#include <stdio.h>
-#include <string.h>
 #include "usbd_cdc_if.h"
-#include <stdarg.h>
+#include "fonts.h"
+#include "ssd1306.h"
+#include "MPU6050.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -50,6 +51,10 @@
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
+
+I2C_HandleTypeDef hi2c1;
+DMA_HandleTypeDef hdma_i2c1_tx;
+DMA_HandleTypeDef hdma_i2c1_rx;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
@@ -86,6 +91,18 @@ static uint16_t esp01IrRx = 0;		/* Índice de lectura para el buffer UDP entrant
 uint8_t  espUSBBuf[ESP_USB_BUF_SIZE];
 volatile uint16_t espUSBBufIw, espUSBBufIr;
 
+uint8_t counter;
+
+int x = 1;
+
+uint8_t mpu6050Counter = 0;
+
+uint8_t i2c1_tx_busy = 0;
+
+uint8_t showMpuData = 0;
+
+static const char HEX_DIGITS[] = "0123456789ABCDEF";	// Tabla de dígitos hex
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -97,6 +114,7 @@ static void MX_USART1_UART_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
 void USBRxData(uint8_t *buf, int len);
 static int  uart_send_byte(uint8_t byte);
@@ -104,10 +122,196 @@ static void esp01_chpd(uint8_t val);
 void onESP01StateChange(_eESP01STATUS state);
 void ESP01_USB_DbgStr(const char *dbgStr);
 void USB_BufferPush(uint8_t b);
+
+
+void my_ssd1306_init(void *ctx);
+int my_ssd1306_write_cmd(void *ctx, uint8_t cmd);
+int my_ssd1306_write_data(void *ctx, const uint8_t *data, uint16_t len);
+int my_ssd1306_write_data_async(void *ctx, const uint8_t *data, uint16_t len);
+uint8_t my_ssd1306_is_busy(void *ctx);
+void my_ssd1306_errorCb(void *ctx, int err);
+void my_ssd1306_delay_ms(void *ctx, uint32_t ms);
+
+int  mpu_writeReg(void   *ctx, uint8_t devAddr, uint8_t regAddr, uint8_t *data, uint16_t length);
+int  mpu_readReg(void   *ctx, uint8_t devAddr, uint8_t regAddr, uint8_t *data, uint16_t length);
+int  mpu_readRegDMA(void   *ctx, uint8_t devAddr, uint8_t regAddr, uint8_t *data, uint16_t length);
+void mpu_delayMs(void    *ctx, uint32_t ms);
+
+void mpu_errorCb(void *ctx, int err);
+void MPU6050_RegisterPlatform(MPU6050_Platform_t *plat);
+void MPU6050_ProcessDMA(void);
+
+void USB_DebugSend(const uint8_t *data, uint16_t len);
+void USB_DebugStr(const char *s);	// Envía una cadena C terminada en '\0' por USB.
+void USB_DebugHex(uint8_t b);	// Envía un byte representado en dos dígitos hexadecimales ASCII.
+void USB_DebugUInt(unsigned int v);		// Envía un entero sin signo en formato decimal ASCII.
+void USB_Debug(const char *fmt, ...);	// Mini-printf para debug: soporta %s, %c, %d/%u, %X y %%.
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+SSD1306_Ctx_t ssd_ctx = {
+  .hi2c      = &hi2c1,
+  .busy_flag = &i2c1_tx_busy
+};
+
+static SSD1306_Platform_t SSD1306_plat = {
+  .ctx              = &ssd_ctx,
+  .init             = my_ssd1306_init,
+  .write_cmd        = my_ssd1306_write_cmd,
+  .write_data       = my_ssd1306_write_data,
+  .write_data_async = my_ssd1306_write_data_async,
+  .is_busy          = my_ssd1306_is_busy,
+  .delay_ms         = my_ssd1306_delay_ms,
+  .onError          = my_ssd1306_errorCb
+};
+
+MPU6050_Platform_t mpuPlat = {
+  .ctx         = &hi2c1,
+  .writeReg    = mpu_writeReg,
+  .readReg     = mpu_readReg,
+  .readRegDMA  = mpu_readRegDMA,
+  .delayMs     = mpu_delayMs,
+  .onError    = mpu_errorCb
+};
+
+void my_ssd1306_init(void *ctx) {
+    MX_I2C1_Init();
+}
+
+// Callback comando
+int my_ssd1306_write_cmd(void *ctx, uint8_t cmd) {
+    HAL_StatusTypeDef st = HAL_I2C_Master_Transmit(&hi2c1, SSD1306_I2C_ADDR, (uint8_t[]){0x00, cmd}, 2, HAL_MAX_DELAY);
+
+    if (st != HAL_OK) {
+        SSD1306_plat.onError(ctx, (int)st);
+        return -1;
+    }
+    return 0;
+}
+
+
+// Callback datos bloqueante
+int my_ssd1306_write_data(void *ctx, const uint8_t *data, uint16_t len) {
+    // Desempaquetar el contexto
+    SSD1306_Ctx_t *c = (SSD1306_Ctx_t*)ctx;
+    // Preparo buffer con control byte + datos
+    uint8_t buf[1 + SSD1306_WIDTH];
+    buf[0] = 0x40;
+    memcpy(&buf[1], data, len);
+    // Transmisión bloqueante
+    HAL_StatusTypeDef st = HAL_I2C_Master_Transmit(
+        c->hi2c,
+        SSD1306_I2C_ADDR,
+        buf,
+        len + 1,
+        HAL_MAX_DELAY
+    );
+    if (st != HAL_OK) {
+        // Notifico el fallo (p.ej. por USB y LED)
+        SSD1306_plat.onError(ctx, (int)st);
+        return -1;
+    }
+    return 0;
+}
+
+// Callback datos no bloqueante (DMA)
+int my_ssd1306_write_data_async(void *ctx, const uint8_t *data, uint16_t len) {
+    SSD1306_Ctx_t *c = (SSD1306_Ctx_t*)ctx;
+    // 1) Si el bus está ocupado, lanza error
+    if (*c->busy_flag) {
+        SSD1306_plat.onError(ctx, -1);     // -1 = BUSY_ERROR
+        return -1;
+    }
+
+    // 2) Preparo buffer (control byte + datos)
+    static uint8_t dmaBuf[1 + SSD1306_WIDTH];
+    dmaBuf[0] = 0x40;
+    memcpy(&dmaBuf[1], data, len);
+
+    // 3) Marco el bus como ocupado
+    *c->busy_flag = 1;
+
+    // 4) Lanzo la DMA
+    HAL_StatusTypeDef st = HAL_I2C_Master_Transmit_DMA(c->hi2c, SSD1306_I2C_ADDR, dmaBuf,len + 1);
+    if (st != HAL_OK) {
+        // si falla al arrancar, limpio flag y notifico
+        *c->busy_flag = 0;
+        SSD1306_plat.onError(ctx, (int)st);
+        return -1;
+    }
+    return 0;
+}
+
+
+// Callback busy-check
+uint8_t my_ssd1306_is_busy(void *ctx) {
+    return i2c1_tx_busy ? 1 : 0;
+}
+
+void my_ssd1306_errorCb(void *ctx, int err) {
+    USB_Debug("ERROR SSD1306: 0x%02X\r\n", err);
+    i2c1_tx_busy = 0;
+	SSD1306_ResetUpdateState();
+}
+
+// Callback delay
+void my_ssd1306_delay_ms(void *ctx, uint32_t ms) {
+    HAL_Delay(ms);
+}
+
+void HAL_I2C_MasterTxCpltCallback(I2C_HandleTypeDef *hi2c) {
+	if (hi2c->Instance == I2C1) {
+        i2c1_tx_busy = 0;
+    }
+}
+
+int mpu_writeReg(void *ctx, uint8_t devAddr, uint8_t regAddr, uint8_t *data, uint16_t len)
+{
+    HAL_StatusTypeDef st = HAL_I2C_Mem_Write((I2C_HandleTypeDef*)ctx, devAddr, regAddr,
+    					I2C_MEMADD_SIZE_8BIT, data, len, HAL_MAX_DELAY);
+    if (st != HAL_OK) {
+        mpuPlat.onError(mpuPlat.ctx, st);
+        return -1;
+    }
+    return 0;
+}
+
+int mpu_readReg(void *ctx, uint8_t devAddr, uint8_t regAddr, uint8_t *data, uint16_t len)
+{
+    HAL_StatusTypeDef st = HAL_I2C_Mem_Read((I2C_HandleTypeDef*)ctx, devAddr, regAddr,
+    					I2C_MEMADD_SIZE_8BIT, data, len, HAL_MAX_DELAY);
+    if (st != HAL_OK) {
+        mpuPlat.onError(mpuPlat.ctx, st);
+        return -1;
+    }
+    return 0;
+}
+
+int mpu_readRegDMA(void *ctx, uint8_t devAddr, uint8_t regAddr, uint8_t *data, uint16_t len)
+{
+    HAL_StatusTypeDef st = HAL_I2C_Mem_Read_DMA((I2C_HandleTypeDef*)ctx, devAddr, regAddr,
+    					I2C_MEMADD_SIZE_8BIT, data, len);
+    if (st != HAL_OK) {
+        mpuPlat.onError(mpuPlat.ctx, st);
+        return -1;
+    }
+    return 0;
+}
+
+void mpu_delayMs(void *ctx, uint32_t ms) {
+    HAL_Delay(ms);
+}
+
+void mpu_errorCb(void *ctx, int err) {	// En caso de que exista un error, lo comunico por USB
+    USB_Debug("ERROR MPU6050: 0x%02X\r\n", err);
+}
+
+void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c) {
+    if (hi2c->Instance != I2C1) return;
+    MPU6050_ProcessDMA();
+}
+
 void USB_BufferPush(uint8_t b){
     espUSBBuf[espUSBBufIw++] = b;
     espUSBBufIw &= (ESP_USB_BUF_SIZE - 1);
@@ -162,11 +366,9 @@ void onESP01StateChange(_eESP01STATUS state) {
             ESP01_StartUDP("192.168.100.5", 30010, 30000);
             break;
         case ESP01_WIFI_NEW_IP: {
-            char buf[64];
-            snprintf(buf, sizeof(buf),
-                     "\r\n>>> ESP01: New IP Address = %s <<<\r\n",
-                     ESP01_GetLocalIP());
-            ESP01_USB_DbgStr(buf);
+        	USB_DebugStr("\r\n>>> ESP01: New IP Address = ");
+			USB_DebugStr(ESP01_GetLocalIP());
+			USB_DebugStr(" <<<\r\n");
             break;
         }
         case ESP01_WIFI_DISCONNECTED:
@@ -175,7 +377,7 @@ void onESP01StateChange(_eESP01STATUS state) {
         case ESP01_UDPTCP_CONNECTED:
             ESP01_USB_DbgStr("\r\n+++ ESP01: UDP Connection Established +++\r\n");
             if (ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED) {
-				const char msg[] = "ALIVE\r\n";
+				char msg[] = "ALIVE\r\n";
 				//ESP01_USB_DbgStr("\r\n>>> ESP01: Sending periodic ping <<<\r\n");
 				ESP01_Send((uint8_t*)msg, 0, sizeof(msg)-1, sizeof(msg)-1);
 			  }
@@ -189,11 +391,101 @@ void onESP01StateChange(_eESP01STATUS state) {
 }
 
 
-
 void ESP01_USB_DbgStr(const char *dbgStr) {
     if (hUsbDeviceFS.dev_state == USBD_STATE_CONFIGURED) {
         CDC_Transmit_FS((uint8_t*)dbgStr, strlen(dbgStr));
     }
+}
+
+// Envío “atómico” por USB (fragmenta en trozos de ≤64 bytes)
+void USB_DebugSend(const uint8_t *data, uint16_t len) {
+    extern USBD_HandleTypeDef hUsbDeviceFS;
+    if (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED) return;
+
+    while (len) {
+        uint16_t chunk = (len > 64 ? 64 : len);
+        if (CDC_Transmit_FS((uint8_t*)data, chunk) != USBD_BUSY) {
+            data  += chunk;
+            len   -= chunk;
+        }
+        // si está ocupado, lo reintentamos en el siguiente bucle
+    }
+}
+
+// Envía una cadena literal
+void USB_DebugStr(const char *s) {
+    USB_DebugSend((uint8_t*)s, (uint16_t)strlen(s));
+}
+
+// Envía un byte como dos dígitos hex ASCII
+void USB_DebugHex(uint8_t b) {
+    char h[2] = { HEX_DIGITS[b >> 4], HEX_DIGITS[b & 0xF] };
+    USB_DebugSend((uint8_t*)h, 2);
+}
+
+// Envía un entero sin signo en decimal
+void USB_DebugUInt(unsigned int v) {
+    char buf[10];
+    int  pos = 0;
+    if (v == 0) {
+        USB_DebugSend((uint8_t*)"0", 1);
+        return;
+    }
+    while (v) {
+        buf[pos++] = '0' + (v % 10);
+        v /= 10;
+    }
+    // buf[] está al revés
+    for (int i = pos - 1; i >= 0; i--) {
+        USB_DebugSend((uint8_t*)&buf[i], 1);
+    }
+}
+
+// La nueva USB_Debug sin vsnprintf:
+void USB_Debug(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+
+    while (*fmt) {
+        if (*fmt == '%') {
+            fmt++;
+            switch (*fmt) {
+                case 's': { // cadena
+                    char *s = va_arg(ap, char*);
+                    USB_DebugStr(s);
+                    break;
+                }
+                case 'c': { // caracter
+                    char c = (char)va_arg(ap, int);
+                    USB_DebugSend((uint8_t*)&c, 1);
+                    break;
+                }
+                case 'u': // entero sin signo
+                case 'd': { // entero con signo (le damos igual)
+                    unsigned int v = va_arg(ap, unsigned int);
+                    USB_DebugUInt(v);
+                    break;
+                }
+                case 'X': { // hex byte
+                    uint8_t b = (uint8_t)va_arg(ap, unsigned int);
+                    USB_DebugHex(b);
+                    break;
+                }
+                case '%': { // literal ‘%’
+                    USB_DebugSend((uint8_t*)"%", 1);
+                    break;
+                }
+                default: // desconocido, lo imprimimos tal cual
+                    USB_DebugSend((uint8_t*)fmt, 1);
+            }
+        } else {
+            // carácter normal
+            USB_DebugSend((uint8_t*)fmt, 1);
+        }
+        fmt++;
+    }
+
+    va_end(ap);
 }
 
 //void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
@@ -241,7 +533,12 @@ int main(void)
   MX_USB_DEVICE_Init();
   MX_ADC1_Init();
   MX_TIM2_Init();
+  MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
+  if (HAL_TIM_Base_Start_IT(&htim1) != HAL_OK) {
+	  Error_Handler();
+  }
+
   CDC_Attach_Rx(USBRxData);
   nBytesTx = 0;
 
@@ -282,6 +579,30 @@ int main(void)
   unerTx.buff = unerTxBuffer;
   unerTx.mask = TXBUFSIZE - 1;
   UNER_Init(&unerRx, &unerTx);
+
+  HAL_Delay(500);
+  SSD1306_RegisterPlatform(&SSD1306_plat);
+  SSD1306_Init();
+
+  SSD1306_GotoXY(35, 5);
+  SSD1306_Puts("TADEO",   &Font_7x10, SSD1306_COLOR_WHITE);
+  SSD1306_GotoXY(5, 35);
+  SSD1306_Puts("MENDELEVICH",&Font_7x10, SSD1306_COLOR_WHITE);
+
+  SSD1306_UpdateScreen_Blocking();
+  HAL_Delay(3000);
+  SSD1306_Fill(SSD1306_COLOR_BLACK);
+  SSD1306_UpdateScreen_Blocking();
+
+  MPU6050_RegisterPlatform(&mpuPlat);
+  int status = MPU6050_Init();
+  if (status != MPU6050_OK) {
+      USB_Debug("ERROR MPU6050: NO SE HA PODIDO INICIALIZAR EL MODULO MPU6050\r\n");
+  }
+  MPU6050_StartRead_Accel_DMA();
+
+  int16_t ax, ay, az;
+  int16_t gx, gy, gz;
 
   tmo100ms = 10;
   is250us = 0;
@@ -335,6 +656,23 @@ int main(void)
 
 		  UNER_Task(); // Procesa tramas UNER recibidas
 
+		  mpu6050Counter++;
+		  if (mpu6050Counter >= 2) {
+			mpu6050Counter = 0;
+			if (!i2c1_tx_busy) {
+			  MPU6050_StartRead_Accel_DMA();   // Lanzo la lectura de aceleracion y luego se lanza sola la de giroscopio dentro de su funcion
+			}
+		  }
+
+		  if (MPU6050_IsAccelReady() && !i2c1_tx_busy) {
+			  MPU6050_ClearAccelReady();
+		  }
+
+		  if (MPU6050_IsGyroReady() && !i2c1_tx_busy) {
+			  MPU6050_ClearGyroReady();
+			  showMpuData    = 1;
+		  }
+
 		  tmo100ms--;
 		  if (tmo100ms == 0) {
 			  tmo100ms = 10;
@@ -358,7 +696,51 @@ int main(void)
 
 	  }*/
 
+	  if (showMpuData && SSD1306_IsUpdateDone()) {
+		  showMpuData = 0;
 
+		  MPU6050_GetAccel(&ax, &ay, &az);
+		  MPU6050_GetGyro(&gx, &gy, &gz);
+
+		  SSD1306_Fill(SSD1306_COLOR_BLACK);
+
+		  SSD1306_GotoXY(0, 0);
+		  SSD1306_Puts("Valores MPU6050:", &Font_7x10, SSD1306_COLOR_WHITE);
+
+		  SSD1306_GotoXY(0, 20);
+		  SSD1306_Puts("AX:", &Font_7x10, SSD1306_COLOR_WHITE);
+		  char num[7];
+		  itoa(ax, num, 10);
+		  SSD1306_Puts(num, &Font_7x10, SSD1306_COLOR_WHITE);
+		  SSD1306_Puts(" AY:", &Font_7x10, SSD1306_COLOR_WHITE);
+		  itoa(ay, num, 10);
+		  SSD1306_Puts(num, &Font_7x10, SSD1306_COLOR_WHITE);
+
+		  // Fila 2: AZ
+		  SSD1306_GotoXY(0, 30);
+		  SSD1306_Puts("AZ:", &Font_7x10, SSD1306_COLOR_WHITE);
+		  itoa(az, num, 10);
+		  SSD1306_Puts(num, &Font_7x10, SSD1306_COLOR_WHITE);
+
+		  // Fila 3: GX, GY
+		  SSD1306_GotoXY(0, 40);
+		  SSD1306_Puts("GX:", &Font_7x10, SSD1306_COLOR_WHITE);
+		  itoa(gx, num, 10);
+		  SSD1306_Puts(num, &Font_7x10, SSD1306_COLOR_WHITE);
+		  SSD1306_Puts(" GY:", &Font_7x10, SSD1306_COLOR_WHITE);
+		  itoa(gy, num, 10);
+		  SSD1306_Puts(num, &Font_7x10, SSD1306_COLOR_WHITE);
+
+		  // Fila 4: GZ
+		  SSD1306_GotoXY(0, 50);
+		  SSD1306_Puts("GZ:", &Font_7x10, SSD1306_COLOR_WHITE);
+		  itoa(gz, num, 10);
+		  SSD1306_Puts(num, &Font_7x10, SSD1306_COLOR_WHITE);
+
+		  SSD1306_RequestUpdate();
+	  }
+
+	  SSD1306_UpdateScreen();
 
 
 	  if (unerTx.indexR != unerTx.indexW && ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED) {
@@ -545,6 +927,40 @@ static void MX_ADC1_Init(void)
 }
 
 /**
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C1_Init(void)
+{
+
+  /* USER CODE BEGIN I2C1_Init 0 */
+
+  /* USER CODE END I2C1_Init 0 */
+
+  /* USER CODE BEGIN I2C1_Init 1 */
+
+  /* USER CODE END I2C1_Init 1 */
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.ClockSpeed = 400000;
+  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
+
+  /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
   * @brief TIM1 Initialization Function
   * @param None
   * @retval None
@@ -714,6 +1130,12 @@ static void MX_DMA_Init(void)
   /* DMA1_Channel1_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
+  /* DMA1_Channel6_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel6_IRQn);
+  /* DMA1_Channel7_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel7_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel7_IRQn);
 
 }
 
