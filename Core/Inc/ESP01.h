@@ -58,6 +58,7 @@ typedef void (*ESP01DebugStr)(const char *dbgStr);
 #define ESP_USB_BUF_SIZE 	256
 
 
+
 /**< Inicializa el driver ESP01 UDP */
 typedef struct{
 	DoCHPD 				    aDoCHPD;			    /**< Puntero a una función que permite manejar el pin CH_PD del ESP01 */
@@ -212,5 +213,13 @@ void ESP01_AttachDebugStr(ESP01DebugStr aDbgStrPtrFun);
 int ESP01_IsHDRRST();
 
 void USB_BufferPush(uint8_t b);
+
+void ESP01_USB_DbgStr(const char *dbgStr);
+
+void onESP01StateChange(_eESP01STATUS state);
+
+void USB_DebugStr(const char *s);
+
+int ESP01_IsSending(void);
 
 #endif /* ESP01_H_ */

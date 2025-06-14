@@ -11,9 +11,12 @@
 #include <stdlib.h>
 
 #include <stdarg.h>       // para va_list, va_start, va_end
-//#include <stdio.h>        // para vsnprintf
 #include "usbd_cdc_if.h"  // para CDC_Transmit_FS
 #include "usbd_core.h"    // para USBD_HandleTypeDef, USBD_STATE_CONFIGURED
+void USB_Debug(const char *txt);  // declaración implícita del prototipo
+
+
+#include "ESP01.h"
 
 char *firmware = "UNER V1.0";
 
@@ -22,13 +25,20 @@ uint16_t globalIndex = 0;
 static _sRx *unerRx;
 static _sTx *unerTx;
 
+_uWord myWord;
+
 // buffer temporal para formateo
 //static char dbgBuf[128];
 
 // Prototipo externo de estado USB (ya lo tienes en main.c)
 extern USBD_HandleTypeDef hUsbDeviceFS;
 
-void UNER_Init(_sRx *rx, _sTx *tx) {
+static int16_t *p_ax = NULL, *p_ay = NULL, *p_az = NULL;
+static int16_t *p_gx = NULL, *p_gy = NULL, *p_gz = NULL;
+
+static uint8_t sendAllSensorsFlag = 0;
+
+void UNER_Init(_sRx *rx, _sTx *tx, int16_t *ax_ptr, int16_t *ay_ptr, int16_t *az_ptr, int16_t *gx_ptr, int16_t *gy_ptr, int16_t *gz_ptr) {
     unerRx = rx;
     unerTx = tx;
     unerRx->indexR = 0;
@@ -44,6 +54,9 @@ void UNER_Init(_sRx *rx, _sTx *tx) {
     unerRx->timeOut   = 0;
     unerRx->isComannd = false;
     unerTx->chk       = 0;
+
+    p_ax = ax_ptr; p_ay = ay_ptr; p_az = az_ptr;
+    p_gx = gx_ptr; p_gy = gy_ptr; p_gz = gz_ptr;
 }
 
 void UNER_PushByte(uint8_t byte) {
@@ -209,6 +222,58 @@ void decodeCommand(_sRx *dataRx, _sTx *dataTx)
             putStrOntx(dataTx, firmware);
             putByteOnTx(dataTx, dataTx->chk);
         break;
+        case GETMPU6050VALUES:
+        	putHeaderOnTx(dataTx, GETMPU6050VALUES, 13);
+
+			myWord.ui16[0] =  (int16_t)*p_ax; 	// Envio datos de aceleracion
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)*p_ay;
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)*p_az;
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+
+			myWord.ui16[0] =  (int16_t)*p_gx; 	// Envio datos de giroscopio
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)*p_gy;
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)*p_gz;
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+
+			putByteOnTx(dataTx, dataTx->chk);
+        	break;
+        case SENDALLSENSORS:
+        	sendAllSensorsFlag = !sendAllSensorsFlag;	// Si esta activa desactivo, y sino, activo
+
+        	putHeaderOnTx(dataTx, SENDALLSENSORS, 13);
+
+			myWord.ui16[0] =  (int16_t)*p_ax; 	// Envio datos de aceleracion
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)*p_ay;
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)*p_az;
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+
+			myWord.ui16[0] =  (int16_t)*p_gx; 	// Envio datos de giroscopio
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)*p_gy;
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)*p_gz;
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+
+			putByteOnTx(dataTx, dataTx->chk);
+        	break;
         default:
             putHeaderOnTx(dataTx, (_eCmd)dataRx->buff[dataRx->indexData], 2);
             putByteOnTx(dataTx,UNKNOWN );
@@ -227,6 +292,74 @@ void decodeCommand(_sRx *dataRx, _sTx *dataTx)
 	   i = (i + 1) & dataTx->mask;
    }
    UNER_Debug("\r\n");*/
+}
+
+void UNER_SendAlive(void) {
+    USB_Debug(">>> UNER_SendAlive llamado\n");
+
+    if (unerTx->indexR != unerTx->indexW) {
+        USB_Debug(">>> NO envio ALIVE: buffer ocupado\n");
+        return;
+    }
+    if (ESP01_IsSending()) {
+        USB_Debug(">>> NO envio ALIVE: ESP01 enviando\n");
+        return;
+    }
+    if (ESP01_StateUDPTCP() != ESP01_UDPTCP_CONNECTED) {
+        USB_Debug(">>> NO envio ALIVE: sin conexion UDP\n");
+        return;
+    }
+
+    USB_Debug(">>> ENVIO ALIVE\n");
+
+    unerTx->indexW = 0;
+    unerTx->indexR = 0;
+    unerTx->chk    = 0;
+
+    putHeaderOnTx(unerTx, ALIVE, 2);
+    putByteOnTx(unerTx, ACK);
+    putByteOnTx(unerTx, unerTx->chk);
+
+    ESP01_Send(unerTx->buff, 0,  unerTx->indexW, TXBUFSIZE);
+}
+
+void UNER_SendAllSensors(void) {
+	if (ESP01_IsSending() || ESP01_StateUDPTCP() != ESP01_UDPTCP_CONNECTED)
+	        return;
+
+	unerTx->indexW = 0;
+	unerTx->indexR = 0;
+	unerTx->chk    = 0;
+
+	putHeaderOnTx(unerTx, SENDALLSENSORS, 13);
+
+	myWord.ui16[0] =  (int16_t)*p_ax; 	// Envio datos de aceleracion
+	putByteOnTx(unerTx, myWord.ui8[0] );
+	putByteOnTx(unerTx, myWord.ui8[1] );
+	myWord.ui16[0] =  (int16_t)*p_ay;
+	putByteOnTx(unerTx, myWord.ui8[0] );
+	putByteOnTx(unerTx, myWord.ui8[1] );
+	myWord.ui16[0] =  (int16_t)*p_az;
+	putByteOnTx(unerTx, myWord.ui8[0] );
+	putByteOnTx(unerTx, myWord.ui8[1] );
+
+	myWord.ui16[0] =  (int16_t)*p_gx; 	// Envio datos de giroscopio
+	putByteOnTx(unerTx, myWord.ui8[0] );
+	putByteOnTx(unerTx, myWord.ui8[1] );
+	myWord.ui16[0] =  (int16_t)*p_gy;
+	putByteOnTx(unerTx, myWord.ui8[0] );
+	putByteOnTx(unerTx, myWord.ui8[1] );
+	myWord.ui16[0] =  (int16_t)*p_gz;
+	putByteOnTx(unerTx, myWord.ui8[0] );
+	putByteOnTx(unerTx, myWord.ui8[1] );
+
+	putByteOnTx(unerTx, unerTx->chk);
+
+	ESP01_Send(unerTx->buff, 0,  unerTx->indexW, TXBUFSIZE);
+}
+
+uint8_t UNER_ShouldSendAllSensors(void) {
+    return sendAllSensorsFlag;
 }
 
 /*void UNER_Debug(const char *fmt, ...)

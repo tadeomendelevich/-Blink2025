@@ -9,7 +9,10 @@
 #include <stddef.h>
 #include <string.h>
 #include <stdlib.h>
+#include "usbd_cdc_if.h"    // para CDC_Transmit_FS()
+extern USBD_HandleTypeDef hUsbDeviceFS;
 
+extern const char *wifiSSID, *wifiPassword, *wifiIp;
 
 static enum {
 	ESP01ATIDLE,
@@ -117,6 +120,7 @@ const char *const responses[] = {respAT, respATp, respOK, respERROR, respWIFIGOT
 
 static uint8_t indexResponse = 0;
 static uint8_t indexResponseChar = 0;
+static uint8_t busyCounter = 0;
 
 //const char _DNSFAIL[] = "DNS FAIL\r";
 //const char _ATCIPDNS[] = "AT+CIPDNS_CUR=1,\"208.67.220.220\",\"8.8.8.8\"\r\n";
@@ -493,8 +497,13 @@ static void ESP01ATDecode(){
 					esp01Flags.bit.WIFICONNECTED = 0;
 					esp01ATSate = ESP01ATHARDRSTSTOP;
 					break;
-				case 16://busy p
-					break;
+				case 16:  // busy p...
+				    busyCounter++;
+				    if (busyCounter >= 7) {
+				        esp01ATSate = ESP01ATHARDRST0;
+				        busyCounter = 0;
+				    }
+				    break;
 				case 17://busy s
 					break;
 				}
@@ -609,6 +618,7 @@ static void ESP01DOConnection(){
 		if(aDbgStr)
 			aDbgStr("+&DBGESP01HARDRESET0\n");
 		esp01ATSate = ESP01ATHARDRST1;
+		esp01TimeoutTask = 20;    // 20×10ms = 200 ms
 		break;
 	case ESP01ATHARDRST1:
 		esp01Handle.aDoCHPD(1);
@@ -621,7 +631,7 @@ static void ESP01DOConnection(){
 		if(aDbgStr)
 			aDbgStr("\r\n>>> ESP01: Hard reset complete, moving to AT sequence <<<\r\n");
 		esp01ATSate = ESP01ATAT;
-		esp01TriesAT = 0;
+		esp01TriesAT = 4;
 		break;
 	case ESP01ATAT:
 		if(esp01TriesAT){
@@ -790,7 +800,7 @@ static void ESP01SENDData(){
 			esp01irTX = esp01iwTX;
 			esp01Flags.bit.WAITINGSYMBOL = 0;
 			esp01ATSate = ESP01ATAT;
-			esp01TimeoutTask = 10;
+			esp01TimeoutTask = 20;
 		}
 		return;
 	}
@@ -805,7 +815,7 @@ static void ESP01SENDData(){
 				if(esp01TXATBuf[esp01irTX] == '>'){
 					esp01Flags.bit.TXCIPSEND = 0;
 					esp01Flags.bit.WAITINGSYMBOL = 1;
-					esp01TimeoutTxSymbol = 5;
+					esp01TimeoutTxSymbol = 10;
 				}
 			}
 			esp01irTX++;
@@ -829,9 +839,56 @@ static void ESP01ByteToBufTX(uint8_t value){
 		esp01iwTX = 0;
 }
 
+void ESP01_USB_DbgStr(const char *dbgStr) {
+    if (hUsbDeviceFS.dev_state == USBD_STATE_CONFIGURED) {
+        CDC_Transmit_FS((uint8_t*)dbgStr, strlen(dbgStr));
+    }
+}
 
+void onESP01StateChange(_eESP01STATUS state) {
+    switch(state) {
+        case ESP01_WIFI_CONNECTED:
+            ESP01_USB_DbgStr("\r\n>>> ESP01: WIFI_CONNECTED (got IP) <<<\r\n");
+            break;
+        case ESP01_WIFI_NEW_IP: {
+        	USB_DebugStr("\r\n>>> ESP01: New IP Address = ");
+			USB_DebugStr(ESP01_GetLocalIP());
+			USB_DebugStr(" <<<\r\n");
+			ESP01_StartUDP(wifiIp, 30010, 30000);	// Iniciamos conexion UDP
+            break;
+        }
+        case ESP01_WIFI_DISCONNECTED:
+            ESP01_USB_DbgStr("\r\nxxx ESP01: WIFI_DISCONNECTED xxx\r\n");
+            // 1) Limpio todo lo pendiente de TX
+            esp01Flags.bit.SENDINGDATA   = 0;
+            esp01Flags.bit.TXCIPSEND      = 0;
+            esp01Flags.bit.WAITINGSYMBOL  = 0;
+            esp01irTX = esp01iwTX;
+            // 2) Arranco el AT-reset y reconexión Wi-Fi
+            if (!ESP01_IsHDRRST()) {
+                ESP01_SetWIFI(wifiSSID, wifiPassword);
+            }
+            break;
 
+        case ESP01_UDPTCP_CONNECTED:
+            ESP01_USB_DbgStr("\r\n+++ UDP Established +++\r\n");
+            if (!ESP01_IsSending()) {
+                const char msg[] = "ALIVE\r\n";
+                ESP01_USB_DbgStr("\r\n>>> Ping inicial <<<\r\n");
+                ESP01_Send((uint8_t*)msg, 0, sizeof(msg)-1, sizeof(msg)-1);
+            }
+            break;
+        case ESP01_SEND_OK:
+            ESP01_USB_DbgStr("\r\n>>> ESP01: Data Sent OK <<<\r\n");
+            break;
+        default:
+            break;
+    }
+}
 
+int ESP01_IsSending(void) {
+    return esp01Flags.bit.SENDINGDATA;
+}
 
 
 /* END Private Functions*/

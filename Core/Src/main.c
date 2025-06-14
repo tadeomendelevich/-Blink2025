@@ -26,7 +26,6 @@
 #include "ESP01.h"
 #include "UNER.h"
 #include "usbd_cdc_if.h"
-#include "fonts.h"
 #include "MPU6050.h"
 /* USER CODE END Includes */
 
@@ -90,20 +89,25 @@ static uint16_t esp01IrRx = 0;		/* Índice de lectura para el buffer UDP entrant
 uint8_t  espUSBBuf[ESP_USB_BUF_SIZE];
 volatile uint16_t espUSBBufIw, espUSBBufIr;
 
-uint8_t counter;
+static uint8_t sendInfoCounter, aliveCounter, mpu6050Counter;
 
 int x = 1;
 
-uint8_t mpu6050Counter = 0;
-
 uint8_t i2c1_tx_busy = 0;
 
-uint8_t showMpuData = 0;
+uint8_t mpuDataReady = 0;
 
 static const char HEX_DIGITS[] = "0123456789ABCDEF";	// Tabla de dígitos hex
 
-static uint16_t pingCounter;
+uint8_t *sendAllSensors;
 
+//const char *wifiSSID     = "MEGACABLE FIBRA-2.4G-ckd0";
+//const char *wifiPassword = "djg19dlk";
+//const char *wifiIp = "192.168.100.5";
+
+const char *wifiSSID     = "Delco_Mendelevich";
+const char *wifiPassword = "toyotakia";
+const char *wifiIp = "192.168.123.57";
 
 /* USER CODE END PV */
 
@@ -121,7 +125,6 @@ static void MX_I2C1_Init(void);
 void USBRxData(uint8_t *buf, int len);
 static int  uart_send_byte(uint8_t byte);
 static void esp01_chpd(uint8_t val);
-void onESP01StateChange(_eESP01STATUS state);
 void ESP01_USB_DbgStr(const char *dbgStr);
 void USB_BufferPush(uint8_t b);
 
@@ -252,43 +255,9 @@ static int uart_send_byte(uint8_t byte) {
     return (HAL_UART_Transmit(&huart1, &byte, 1, 100) == HAL_OK) ? 1 : 0;
 }
 
-void onESP01StateChange(_eESP01STATUS state) {
-    switch(state) {
-        case ESP01_WIFI_CONNECTED:
-            ESP01_USB_DbgStr("\r\n>>> ESP01: WIFI_CONNECTED (got IP) <<<\r\n");
-            ESP01_StartUDP("192.168.100.5", 30010, 30000);
-            break;
-        case ESP01_WIFI_NEW_IP: {
-        	USB_DebugStr("\r\n>>> ESP01: New IP Address = ");
-			USB_DebugStr(ESP01_GetLocalIP());
-			USB_DebugStr(" <<<\r\n");
-            break;
-        }
-        case ESP01_WIFI_DISCONNECTED:
-            ESP01_USB_DbgStr("\r\nxxx ESP01: WIFI_DISCONNECTED xxx\r\n");
-            break;
-        case ESP01_UDPTCP_CONNECTED:
-            ESP01_USB_DbgStr("\r\n+++ ESP01: UDP Connection Established +++\r\n");
-            if (ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED) {
-				const char msg[] = "ALIVE\r\n";
-				ESP01_USB_DbgStr("\r\n>>> ESP01: Sending periodic ping <<<\r\n");
-				ESP01_Send((uint8_t*)msg, 0, sizeof(msg)-1, sizeof(msg)-1);
-			  }
-            break;
-        case ESP01_SEND_OK:
-            ESP01_USB_DbgStr("\r\n>>> ESP01: Data Sent OK <<<\r\n");
-            break;
-        default:
-            break;
-    }
-}
 
 
-void ESP01_USB_DbgStr(const char *dbgStr) {
-    if (hUsbDeviceFS.dev_state == USBD_STATE_CONFIGURED) {
-        CDC_Transmit_FS((uint8_t*)dbgStr, strlen(dbgStr));
-    }
-}
+
 
 // Envío “atómico” por USB (fragmenta en trozos de ≤64 bytes)
 void USB_DebugSend(const uint8_t *data, uint16_t len) {
@@ -456,7 +425,7 @@ int main(void)
   ESP01_AttachDebugStr(ESP01_USB_DbgStr);
   ESP01_AttachChangeState(onESP01StateChange);
 
-  ESP01_SetWIFI("MEGACABLE FIBRA-2.4G-ckd0", "djg19dlk");
+  ESP01_SetWIFI(wifiSSID, wifiPassword);
   //ESP01_SetWIFI("FCAL", "fcalconcordia.06-2019");
 
 
@@ -467,11 +436,14 @@ int main(void)
   //ESP01_StartUDP("172.23.205.98", 30000, 30010);
   //ESP01_StartUDP("192.168.100.5", 30000, 30010);		// Inicio conexion UDP
 
+  int16_t ax, ay, az;	// Inicializo variables de aceleracion y giroscopio
+  int16_t gx, gy, gz;
+
   unerRx.buff = unerRxBuffer;
   unerRx.mask = RXBUFSIZE - 1;
   unerTx.buff = unerTxBuffer;
   unerTx.mask = TXBUFSIZE - 1;
-  UNER_Init(&unerRx, &unerTx);
+  UNER_Init(&unerRx, &unerTx, &ax, &ay, &az, &gx, &gy, &gz);
 
   MPU6050_RegisterPlatform(&mpuPlat);
   int status = MPU6050_Init();
@@ -480,13 +452,12 @@ int main(void)
   }
   MPU6050_StartRead_Accel_DMA();
 
-  int16_t ax, ay, az;
-  int16_t gx, gy, gz;
-
   tmo100ms = 10;
   is250us = 0;
   is10ms = 0;
-  pingCounter = 0;
+  mpu6050Counter = 0;
+  aliveCounter = 0;
+  sendAllSensors = 0;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -503,22 +474,24 @@ int main(void)
 	  if(is10ms) {
 		  is10ms = 0;
 
-		  pingCounter++;
-		  if (pingCounter >= 500) {	// —— Envío de ALIVE periodico ——
-			  pingCounter = 0;
-			  if (ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED) {
-			  // 1) Reinicio índices y checksum
-			  unerTx.indexW = 0;
-			  unerTx.chk    = 0;
-
-			  // 2) Ensamblo el paquete UNER “ALIVE”
-			  putHeaderOnTx(&unerTx, ALIVE, 2);
-			  putByteOnTx(&unerTx, ACK);
-			  putByteOnTx(&unerTx, unerTx.chk);
-
-			  // 3) Envío la trama completa
-			  ESP01_Send(unerTx.buff,  0, unerTx.indexW, unerTx.indexW);
+		  tmo100ms--;
+		  if (tmo100ms == 0) {
+			  tmo100ms = 10;
+			  HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin); // Blink LED
 		  }
+
+		  aliveCounter++;
+		  if (aliveCounter >= 500) {
+		      aliveCounter = 0;
+		      UNER_SendAlive();
+		  }
+
+		  sendInfoCounter++;
+		  if (sendInfoCounter >= 50) {
+		      sendInfoCounter = 0;
+		      if (UNER_ShouldSendAllSensors()) {
+		          UNER_SendAllSensors();
+		      }
 		  }
 
 		  ESP01_Timeout10ms();  // Requerido por la librería ESP01
@@ -557,13 +530,13 @@ int main(void)
 
 		  if (MPU6050_IsGyroReady() && !i2c1_tx_busy) {
 			  MPU6050_ClearGyroReady();
-			  showMpuData    = 1;
+			  mpuDataReady    = 1;
 		  }
 
-		  tmo100ms--;
-		  if (tmo100ms == 0) {
-			  tmo100ms = 10;
-			  HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin); // Blink LED
+		  if (mpuDataReady) {
+			  mpuDataReady = 0;
+			  MPU6050_GetAccel(&ax, &ay, &az);
+			  MPU6050_GetGyro(&gx, &gy, &gz);
 		  }
 
 	  }
@@ -583,26 +556,21 @@ int main(void)
 
 	  }*/
 
-	  if (showMpuData) {
-		  showMpuData = 0;
-		  MPU6050_GetAccel(&ax, &ay, &az);
-		  MPU6050_GetGyro(&gx, &gy, &gz);
+
+
+	  if (unerTx.indexR != unerTx.indexW && ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED && !ESP01_IsSending()) {
+	  	uint8_t dataToSend[TXBUFSIZE];
+	  	uint16_t i = 0;
+	  	while (unerTx.indexR != unerTx.indexW && i < sizeof(dataToSend)) {
+	  		dataToSend[i++] = unerTx.buff[unerTx.indexR++];
+	  		unerTx.indexR &= unerTx.mask;
+	  	}
+	  	if (i > 0) {
+	  		if (ESP01_Send(dataToSend, 0, i, i) != ESP01_SEND_READY) {
+	  			// opcional: volver atrás unerTx.indexR si querés reintentar más tarde
+	  		}
+	  	}
 	  }
-
-	  if (unerTx.indexR != unerTx.indexW && ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED) {
-	      uint8_t dataToSend[TXBUFSIZE];
-	      uint16_t i = 0;
-
-	      while (unerTx.indexR != unerTx.indexW && i < sizeof(dataToSend)) {
-	          dataToSend[i++] = unerTx.buff[unerTx.indexR++];
-	          unerTx.indexR &= unerTx.mask;
-	      }
-
-	      if (i > 0) {
-	          ESP01_Send(dataToSend, 0, i, i);
-	      }
-	  }
-
 
 	  if (dataTx) {
 	      HAL_UART_Transmit(&huart1, &dataTx, 1, 100);

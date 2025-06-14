@@ -57,30 +57,51 @@ typedef struct {
 // Enums para el estado de parsing
 enum { HEADER_U, HEADER_N, HEADER_E, HEADER_R, NBYTES, TOKEN, PAYLOAD };
 
-// Comandos UNER (usar los mismos ID que en tu implementación Visual Studio)
-typedef enum {
-    ALIVE = 0xA0,
-    FIRMWARE,
-    LEDSTATUS,
-    BUTTONSTATUS,
-    ANALOGSENSORS,
-    SETBLACKCOLOR,
-    SETWHITECOLOR,
-    SETLINESPEED,
-    MOTORTEST,
-    SERVOANGLE,
-    CONFIGSERVO,
-    GETDISTANCE,
-    GETSPEED,
-    SENDALLSENSORS,
-    RADAR,
-    SW0,
-    UNKNOWN = 0xFE,
-    ACK = 0xF0,
-    SERVOFINISHMOVE = 0xF1
-} _eCmd;
+typedef union{                          //union para definir la bandera, y no ocupar una variable booleana
+    struct{
+        uint8_t b0:1;
+        uint8_t b1:1;
+        uint8_t b2:1;
+        uint8_t b3:1;
+        uint8_t b4:1;
+        uint8_t b5:1;
+        uint8_t b6:1;
+        uint8_t b7:1;
+    }bit;
+    uint8_t byte;
+}_flag;
 
-void UNER_Init(_sRx *rx, _sTx *tx);
+/**
+ *
+ * @brief Unión ara la descomposición/composición de números mayores a 1 byte
+ *
+ */
+typedef union{
+    uint32_t    ui32;
+    int32_t     i32;
+    uint16_t    ui16[2];
+    int16_t     i16[2];
+    uint8_t     ui8[4];
+    int8_t      i8[4];
+}_uWord;
+
+/**
+ * @brief Enumeración de los comandos del protocolo
+ *
+ */
+typedef enum{
+    ALIVE = 0xF0,
+    FIRMWARE= 0xF1,
+    MOTORTEST = 0xA1,
+    GETSPEED = 0xA4,
+    SENDALLSENSORS = 0xA9,
+    RADAR = 0xA8,
+	GETMPU6050VALUES=0xA6,
+    ACK = 0x0D,
+    UNKNOWN = 0xFF
+}_eCmd;
+
+void UNER_Init(_sRx *rx, _sTx *tx, int16_t *ax_ptr, int16_t *ay_ptr, int16_t *az_ptr, int16_t *gx_ptr, int16_t *gy_ptr, int16_t *gz_ptr);
 
 void UNER_PushByte(uint8_t byte);
 
@@ -96,6 +117,10 @@ uint8_t putStrOntx(_sTx *dataTx, const char *str);
 
 void decodeCommand(_sRx *dataRx, _sTx *dataTx);
 
-void UNER_Debug(const char *fmt, ...);
+void UNER_SendAlive(void);
+
+void UNER_SendAllSensors(void);
+
+uint8_t UNER_ShouldSendAllSensors(void);
 
 #endif /* ESP01_H_ */
