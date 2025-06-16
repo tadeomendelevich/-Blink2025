@@ -91,12 +91,13 @@ typedef union{
  */
 typedef enum{
     ALIVE = 0xF0,
-    FIRMWARE= 0xF1,
+    FIRMWARE = 0xF1,
     MOTORTEST = 0xA1,
     GETSPEED = 0xA4,
-    SENDALLSENSORS = 0xA9,
+	GETADCVALUES = 0xA5,
+	GETMPU6050VALUES = 0xA6,
     RADAR = 0xA8,
-	GETMPU6050VALUES=0xA6,
+	SENDALLSENSORS = 0xA9,
     ACK = 0x0D,
     UNKNOWN = 0xFF
 }_eCmd;
@@ -125,5 +126,11 @@ uint8_t UNER_ShouldSendAllSensors(void);
 
 void UNER_SendSerial(_sTx *tx);
 
+/**
+ * Registra el buffer de valores ADC para que UNER pueda leerlos.
+ * @param buf  Puntero al array de uint16_t con las lecturas ADC.
+ * @param len  Número de elementos (p. ej. 8).
+ */
+void UNER_RegisterADCBuffer(uint16_t *buf, uint8_t len);
 
 #endif /* ESP01_H_ */

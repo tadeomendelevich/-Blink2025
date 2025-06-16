@@ -39,6 +39,9 @@ static int16_t *p_gx = NULL, *p_gy = NULL, *p_gz = NULL;
 
 static uint8_t sendAllSensorsFlag = 0;
 
+static uint16_t *p_adcBuf = NULL;	// pun
+static uint8_t   adcBufLen = 0;
+
 void UNER_Init(_sRx *rx, _sTx *tx, int16_t *ax_ptr, int16_t *ay_ptr, int16_t *az_ptr, int16_t *gx_ptr, int16_t *gy_ptr, int16_t *gz_ptr) {
     unerRx = rx;
     unerTx = tx;
@@ -209,9 +212,6 @@ uint8_t putStrOntx(_sTx *dataTx, const char *str)
 
 void decodeCommand(_sRx *dataRx, _sTx *dataTx)
 {
-	/*// Marca el índice inicial antes de escribir el comando
-	uint8_t txStart = dataTx->indexW;*/
-
     switch(dataRx->buff[dataRx->indexData]){
         case ALIVE:
             putHeaderOnTx(dataTx, ALIVE, 2);
@@ -223,6 +223,36 @@ void decodeCommand(_sRx *dataRx, _sTx *dataTx)
             putStrOntx(dataTx, firmware);
             putByteOnTx(dataTx, dataTx->chk);
         break;
+        case GETADCVALUES:
+        	putHeaderOnTx(dataTx, GETADCVALUES, 17);
+
+			myWord.ui16[0] =  (int16_t)p_adcBuf[0]; 		// ADC 1
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)p_adcBuf[1];			// ADC 2
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)p_adcBuf[2];			// ADC 3
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)p_adcBuf[3];			// ADC 4
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)p_adcBuf[4];			// ADC 5
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)p_adcBuf[5];			// ADC 6
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)p_adcBuf[6];			// ADC 7
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)p_adcBuf[7];			// ADC 8
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+
+			putByteOnTx(dataTx, dataTx->chk);
+        	break;
         case GETMPU6050VALUES:
         	putHeaderOnTx(dataTx, GETMPU6050VALUES, 13);
 
@@ -249,10 +279,34 @@ void decodeCommand(_sRx *dataRx, _sTx *dataTx)
 			putByteOnTx(dataTx, dataTx->chk);
         	break;
         case SENDALLSENSORS:
-        	USB_DebugStr(">>> NO envio ALIVE: sin conexion UDP\n");
         	sendAllSensorsFlag = !sendAllSensorsFlag;	// Si esta activa desactivo, y sino, activo
 
-        	putHeaderOnTx(dataTx, SENDALLSENSORS, 13);
+        	putHeaderOnTx(dataTx, SENDALLSENSORS, 29);
+
+        	myWord.ui16[0] =  (int16_t)p_adcBuf[0]; 		// ADC 1
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)p_adcBuf[1];			// ADC 2
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)p_adcBuf[2];			// ADC 3
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)p_adcBuf[3];			// ADC 4
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)p_adcBuf[4];			// ADC 5
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)p_adcBuf[5];			// ADC 6
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)p_adcBuf[6];			// ADC 7
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)p_adcBuf[7];			// ADC 8
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
 
 			myWord.ui16[0] =  (int16_t)*p_ax; 	// Envio datos de aceleracion
 			putByteOnTx(dataTx, myWord.ui8[0] );
@@ -282,18 +336,6 @@ void decodeCommand(_sRx *dataRx, _sTx *dataTx)
             putByteOnTx(dataTx, dataTx->chk);
         break;
     }
-
-   /* // Índice tras escribir todos los bytes
-   uint8_t txEnd = dataTx->indexW;
-
-   // Imprime por USB los bytes del paquete en formato hex
-   UNER_Debug("UNER TX [%u→%u]: ", txStart, txEnd);
-   uint8_t i = txStart;
-   while (i != txEnd) {
-	   UNER_Debug("%02X ", dataTx->buff[i]);
-	   i = (i + 1) & dataTx->mask;
-   }
-   UNER_Debug("\r\n");*/
 }
 
 void UNER_SendAlive(void) {
@@ -337,7 +379,32 @@ void UNER_SendAllSensors(void) {
 	unerTx->indexR = 0;
 	unerTx->chk    = 0;
 
-	putHeaderOnTx(unerTx, SENDALLSENSORS, 13);
+	putHeaderOnTx(unerTx, SENDALLSENSORS, 29);
+
+	myWord.ui16[0] =  (int16_t)p_adcBuf[0]; 		// ADC 1
+	putByteOnTx(unerTx, myWord.ui8[0] );
+	putByteOnTx(unerTx, myWord.ui8[1] );
+	myWord.ui16[0] =  (int16_t)p_adcBuf[1];			// ADC 2
+	putByteOnTx(unerTx, myWord.ui8[0] );
+	putByteOnTx(unerTx, myWord.ui8[1] );
+	myWord.ui16[0] =  (int16_t)p_adcBuf[2];			// ADC 3
+	putByteOnTx(unerTx, myWord.ui8[0] );
+	putByteOnTx(unerTx, myWord.ui8[1] );
+	myWord.ui16[0] =  (int16_t)p_adcBuf[3];			// ADC 4
+	putByteOnTx(unerTx, myWord.ui8[0] );
+	putByteOnTx(unerTx, myWord.ui8[1] );
+	myWord.ui16[0] =  (int16_t)p_adcBuf[4];			// ADC 5
+	putByteOnTx(unerTx, myWord.ui8[0] );
+	putByteOnTx(unerTx, myWord.ui8[1] );
+	myWord.ui16[0] =  (int16_t)p_adcBuf[5];			// ADC 6
+	putByteOnTx(unerTx, myWord.ui8[0] );
+	putByteOnTx(unerTx, myWord.ui8[1] );
+	myWord.ui16[0] =  (int16_t)p_adcBuf[6];			// ADC 7
+	putByteOnTx(unerTx, myWord.ui8[0] );
+	putByteOnTx(unerTx, myWord.ui8[1] );
+	myWord.ui16[0] =  (int16_t)p_adcBuf[7];			// ADC 8
+	putByteOnTx(unerTx, myWord.ui8[0] );
+	putByteOnTx(unerTx, myWord.ui8[1] );
 
 	myWord.ui16[0] =  (int16_t)*p_ax; 	// Envio datos de aceleracion
 	putByteOnTx(unerTx, myWord.ui8[0] );
@@ -388,18 +455,10 @@ void UNER_SendSerial(_sTx *tx)
 }
 
 
-/*void UNER_Debug(const char *fmt, ...)
-{
-    va_list args;
-    va_start(args, fmt);
-    int len = vsnprintf(dbgBuf, sizeof(dbgBuf), fmt, args);
-    va_end(args);
+void UNER_RegisterADCBuffer(uint16_t *buf, uint8_t len) {
+    p_adcBuf   = buf;
+    adcBufLen  = len;
+}
 
-    // sólo si el USB está configurado
-    if (hUsbDeviceFS.dev_state == USBD_STATE_CONFIGURED && len > 0)
-    {
-        // vsnprintf no añade '\0' en len posiciones, pero CDC_Transmit_FS necesita contar bytes
-        CDC_Transmit_FS((uint8_t*)dbgBuf, (uint16_t)len);
-    }
-}*/
+
 /* END Private Functions*/

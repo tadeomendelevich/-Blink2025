@@ -97,7 +97,7 @@ static uint16_t esp01IrRx = 0;		/* Índice de lectura para el buffer UDP entrant
 uint8_t  espUSBBuf[ESP_USB_BUF_SIZE];
 volatile uint16_t espUSBBufIw, espUSBBufIr;
 
-static uint8_t sendInfoCounter, aliveCounter, mpu6050Counter;
+static uint8_t sendModulesCunter, aliveCounter, mpu6050Counter;
 
 int x = 1;
 
@@ -233,17 +233,6 @@ void USB_BufferPush(uint8_t b){
     espUSBBufIw &= (ESP_USB_BUF_SIZE - 1);
 }
 
-/*void USBRxData(uint8_t *buf, int len) {
-	BufUSBTx[0] = 'U';
-	BufUSBTx[1] = 'S';
-	BufUSBTx[2] = 'B';
-	BufUSBTx[3] = ' ';
-
-	for(nBytesTx = 0; nBytesTx < len; nBytesTx++) {
-		BufUSBTx[nBytesTx+4] = buf[nBytesTx];
-	}
-
-}*/
 void USBRxData(uint8_t *buf, int len) {
     for (int i = 0; i < len; i++) {
         UNER_PushByte(buf[i]);
@@ -486,20 +475,10 @@ int main(void)
   esp01_chpd(1);  // Pone CH_PD a nivel alto para sacar al módulo de reset
   HAL_Delay(100);
 
-  //ESP01_AttachDebugStr((void (*)(const char *))printf);
   ESP01_AttachDebugStr(ESP01_USB_DbgStr);
   ESP01_AttachChangeState(onESP01StateChange);
 
   ESP01_SetWIFI(wifiSSID, wifiPassword);
-  //ESP01_SetWIFI("FCAL", "fcalconcordia.06-2019");
-
-
-  //if (ESP01_StateWIFI() == ESP01_WIFI_CONNECTED) {
-  //    ESP01_StartTCPServer(5000);  // crea servidor TCP en puerto 5000
-  //}
-
-  //ESP01_StartUDP("172.23.205.98", 30000, 30010);
-  //ESP01_StartUDP("192.168.100.5", 30000, 30010);		// Inicio conexion UDP
 
   int16_t ax, ay, az;	// Inicializo variables de aceleracion y giroscopio
   int16_t gx, gy, gz;
@@ -509,6 +488,7 @@ int main(void)
   unerTx.buff = unerTxBuffer;
   unerTx.mask = TXBUFSIZE - 1;
   UNER_Init(&unerRx, &unerTx, &ax, &ay, &az, &gx, &gy, &gz);
+  UNER_RegisterADCBuffer(adcValues, 8);  // array adcValues[8]
 
   MPU6050_RegisterPlatform(&mpuPlat);
   int status = MPU6050_Init();
@@ -534,6 +514,7 @@ int main(void)
     /* USER CODE BEGIN 3 */
 	  if (is250us) {
 	      is250us = 0;
+	      HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValues, 8);
 	  }
 
 	  if(is10ms) {
@@ -561,9 +542,9 @@ int main(void)
 				  UNER_SendAlive();
 		  }
 
-		  sendInfoCounter++;
-		  if (sendInfoCounter >= 50) {
-			  sendInfoCounter = 0;
+		  sendModulesCunter++;
+		  if (sendModulesCunter >= 20) {
+			  sendModulesCunter = 0;
 			  if (UNER_ShouldSendAllSensors()) {
 				  UNER_SendAllSensors();
 			  }
@@ -591,7 +572,7 @@ int main(void)
 			  MPU6050_GetAccel(&ax, &ay, &az);
 			  MPU6050_GetGyro(&gx, &gy, &gz);
 
-			  /*if (!ema_initialized) {
+			  if (!ema_initialized) {
 			      // Primera muestra: inicializar
 			      ax_ema = ax;  ay_ema = ay;  az_ema = az;
 			      gx_ema = gx;  gy_ema = gy;  gz_ema = gz;
@@ -614,43 +595,35 @@ int main(void)
 
 			  gx = (int16_t)gx_ema;
 			  gy = (int16_t)gy_ema;
-			  gz = (int16_t)gz_ema;*/
+			  gz = (int16_t)gz_ema;
 		  }
 
-		  /*if (espUSBBufIr != espUSBBufIw) {
-			  uint8_t tmp[64];
-			  uint16_t cnt = 0;
-			  while (espUSBBufIr != espUSBBufIw && cnt < sizeof(tmp)) {
-				  tmp[cnt++] = espUSBBuf[espUSBBufIr++];
-				  espUSBBufIr &= (ESP_USB_BUF_SIZE - 1);
-			  }
-			  CDC_Transmit_FS(tmp, cnt);
+		  /*adcCounter++;
+		  if (adcCounter >= 200) {
+			  adcCounter = 0;
+		      int len = sprintf(usbBuffer,
+		          "ADC: %d,%d,%d,%d,%d,%d,%d,%d\r\n",
+		          adcValues[0], adcValues[1], adcValues[2], adcValues[3],
+		          adcValues[4], adcValues[5], adcValues[6], adcValues[7]);
+		      // Envío no bloqueante por USB
+		      USB_DebugSend((uint8_t*)usbBuffer, len);
+		      // Reinicio lectura ADC’s
+		      HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValues, 8);
 		  }*/
 
-		  while (esp01IrRx != esp01IwRx) {
-			  uint8_t b = esp01RxBuf[esp01IrRx++];
-			  esp01IrRx &= (ESP01RXBUFAT - 1);   // wrap-around
-			  UNER_PushByte(b);                  // turn5file2: UNER_PushByte guarda en unerRx->buff[]
-		  }
+
+
+
 
 	  }
 
-	  /*if(adcCounter >= 1) {		// Envio y acero valores ADC
-
-		  int len = sprintf(usbBuffer, "ADC: %d\r\n", adcValues[0]);
-//			  int len = sprintf(usbBuffer, "ADC: %d,%d,%d,%d,%d,%d,%d,%d\r\n",
-//								adcValues[0], adcValues[1], adcValues[2], adcValues[3],
-//								adcValues[4], adcValues[5], adcValues[6], adcValues[7]);
-
-		  CDC_Transmit_FS((uint8_t*)usbBuffer, len);
-
-		  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValues, 8);	// Reinicio lectura ADC's
-
-		  adcCounter = 0;
-
-	  }*/
-
 	  usb_service_tx();
+
+	  while (esp01IrRx != esp01IwRx) {
+		  uint8_t b = esp01RxBuf[esp01IrRx++];
+		  esp01IrRx &= (ESP01RXBUFAT - 1);   // wrap-around
+		  UNER_PushByte(b);                  // turn5file2: UNER_PushByte guarda en unerRx->buff[]
+	  }
 
 	  if (unerTx.indexR != unerTx.indexW && ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED && !ESP01_IsSending()) {
 	  	uint8_t dataToSend[TXBUFSIZE];
