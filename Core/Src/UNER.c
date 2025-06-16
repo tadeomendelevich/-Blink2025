@@ -13,7 +13,7 @@
 #include <stdarg.h>       // para va_list, va_start, va_end
 #include "usbd_cdc_if.h"  // para CDC_Transmit_FS
 #include "usbd_core.h"    // para USBD_HandleTypeDef, USBD_STATE_CONFIGURED
-void USB_Debug(const char *txt);  // declaración implícita del prototipo
+void USB_Debug(const char *fmt, ...);  // declaración implícita del prototipo
 
 
 #include "ESP01.h"
@@ -32,6 +32,7 @@ _uWord myWord;
 
 // Prototipo externo de estado USB (ya lo tienes en main.c)
 extern USBD_HandleTypeDef hUsbDeviceFS;
+extern uint8_t usb_enqueue_tx(const uint8_t *data, uint16_t len);
 
 static int16_t *p_ax = NULL, *p_ay = NULL, *p_az = NULL;
 static int16_t *p_gx = NULL, *p_gy = NULL, *p_gz = NULL;
@@ -248,6 +249,7 @@ void decodeCommand(_sRx *dataRx, _sTx *dataTx)
 			putByteOnTx(dataTx, dataTx->chk);
         	break;
         case SENDALLSENSORS:
+        	USB_DebugStr(">>> NO envio ALIVE: sin conexion UDP\n");
         	sendAllSensorsFlag = !sendAllSensorsFlag;	// Si esta activa desactivo, y sino, activo
 
         	putHeaderOnTx(dataTx, SENDALLSENSORS, 13);
@@ -298,19 +300,19 @@ void UNER_SendAlive(void) {
     USB_Debug(">>> UNER_SendAlive llamado\n");
 
     if (unerTx->indexR != unerTx->indexW) {
-        USB_Debug(">>> NO envio ALIVE: buffer ocupado\n");
+        USB_DebugStr(">>> NO envio ALIVE: buffer ocupado\n");
         return;
     }
     if (ESP01_IsSending()) {
-        USB_Debug(">>> NO envio ALIVE: ESP01 enviando\n");
+        USB_DebugStr(">>> NO envio ALIVE: ESP01 enviando\n");
         return;
     }
     if (ESP01_StateUDPTCP() != ESP01_UDPTCP_CONNECTED) {
-        USB_Debug(">>> NO envio ALIVE: sin conexion UDP\n");
+        USB_DebugStr(">>> NO envio ALIVE: sin conexion UDP\n");
         return;
     }
 
-    USB_Debug(">>> ENVIO ALIVE\n");
+    USB_DebugStr(">>> UNER_SendAlive llamado\n");
 
     unerTx->indexW = 0;
     unerTx->indexR = 0;
@@ -321,6 +323,10 @@ void UNER_SendAlive(void) {
     putByteOnTx(unerTx, unerTx->chk);
 
     ESP01_Send(unerTx->buff, 0,  unerTx->indexW, TXBUFSIZE);
+
+    if (hUsbDeviceFS.dev_state == USBD_STATE_CONFIGURED) {
+        usb_enqueue_tx(unerTx->buff, unerTx->indexW);
+    }
 }
 
 void UNER_SendAllSensors(void) {
@@ -356,11 +362,31 @@ void UNER_SendAllSensors(void) {
 	putByteOnTx(unerTx, unerTx->chk);
 
 	ESP01_Send(unerTx->buff, 0,  unerTx->indexW, TXBUFSIZE);
+	if (hUsbDeviceFS.dev_state == USBD_STATE_CONFIGURED) {
+	    usb_enqueue_tx(unerTx->buff, unerTx->indexW);
+	}
 }
 
 uint8_t UNER_ShouldSendAllSensors(void) {
     return sendAllSensorsFlag;
 }
+
+void UNER_SendSerial(_sTx *tx)
+{
+    uint16_t len = (tx->indexW + tx->mask + 1 - tx->indexR) & tx->mask;
+    if (!len) return;
+
+    uint8_t tmp[TXBUFSIZE];
+    for (uint16_t i = 0; i < len; i++) {
+        tmp[i] = tx->buff[(tx->indexR + i) & tx->mask];
+    }
+    // ---> envío asíncrono y no bloqueante <---
+    if (hUsbDeviceFS.dev_state == USBD_STATE_CONFIGURED) {
+        usb_enqueue_tx(tmp, len);
+    }
+    tx->indexR = tx->indexW;
+}
+
 
 /*void UNER_Debug(const char *fmt, ...)
 {

@@ -123,4 +123,7 @@ void UNER_SendAllSensors(void);
 
 uint8_t UNER_ShouldSendAllSensors(void);
 
+void UNER_SendSerial(_sTx *tx);
+
+
 #endif /* ESP01_H_ */

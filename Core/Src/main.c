@@ -23,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdarg.h>
+#include <string.h>
 #include "ESP01.h"
 #include "UNER.h"
 #include "usbd_cdc_if.h"
@@ -36,8 +37,15 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define CH_PD_Pin        GPIO_PIN_11
-#define CH_PD_GPIO_Port  GPIOB
+#define CH_PD_GPIO_Port  	GPIOB
+#define CH_PD_Pin        	GPIO_PIN_11
+
+#define USB_TX_BUF_SIZE 	256
+#define USB_TX_BUF_MASK 	(USB_TX_BUF_SIZE-1)  // tamaño potencia de 2
+
+#define EMA_DIV 			40
+
+
 
 /* USER CODE END PD */
 
@@ -72,7 +80,7 @@ uint8_t dataTx, dataRx;
 static uint8_t unerRxBuffer[RXBUFSIZE];
 static uint8_t unerTxBuffer[TXBUFSIZE];
 static _sRx    unerRx;
-static _sTx    unerTx;
+ _sTx    unerTx;
 
 char usbBuffer[128];
 
@@ -109,6 +117,16 @@ const char *wifiSSID     = "Delco_Mendelevich";
 const char *wifiPassword = "toyotakia";
 const char *wifiIp = "192.168.123.57";
 
+
+static int32_t ax_ema = 0, ay_ema = 0, az_ema = 0;
+static int32_t gx_ema = 0, gy_ema = 0, gz_ema = 0;
+static uint8_t ema_initialized = 0;
+
+static uint8_t usb_tx_buf[USB_TX_BUF_SIZE];
+static volatile uint16_t tx_head = 0;
+static volatile uint16_t tx_tail = 0;
+static volatile uint8_t usb_tx_busy = 0;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -143,6 +161,8 @@ void USB_DebugStr(const char *s);	// Envía una cadena C terminada en '\0' por U
 void USB_DebugHex(uint8_t b);	// Envía un byte representado en dos dígitos hexadecimales ASCII.
 void USB_DebugUInt(unsigned int v);		// Envía un entero sin signo en formato decimal ASCII.
 void USB_Debug(const char *fmt, ...);	// Mini-printf para debug: soporta %s, %c, %d/%u, %X y %%.
+uint8_t usb_enqueue_tx(const uint8_t *data, uint16_t len);
+void usb_service_tx(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -213,7 +233,7 @@ void USB_BufferPush(uint8_t b){
     espUSBBufIw &= (ESP_USB_BUF_SIZE - 1);
 }
 
-void USBRxData(uint8_t *buf, int len) {
+/*void USBRxData(uint8_t *buf, int len) {
 	BufUSBTx[0] = 'U';
 	BufUSBTx[1] = 'S';
 	BufUSBTx[2] = 'B';
@@ -223,7 +243,12 @@ void USBRxData(uint8_t *buf, int len) {
 		BufUSBTx[nBytesTx+4] = buf[nBytesTx];
 	}
 
-	nBytesTx += 4;
+}*/
+void USBRxData(uint8_t *buf, int len) {
+    for (int i = 0; i < len; i++) {
+        UNER_PushByte(buf[i]);
+    }
+    // NO llamar UNER_Task() aquí
 }
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
@@ -261,16 +286,12 @@ static int uart_send_byte(uint8_t byte) {
 
 // Envío “atómico” por USB (fragmenta en trozos de ≤64 bytes)
 void USB_DebugSend(const uint8_t *data, uint16_t len) {
-    extern USBD_HandleTypeDef hUsbDeviceFS;
-    if (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED) return;
-
+    // Fragmenta en trozos ≤64B y encolarlos sin bloquear
     while (len) {
         uint16_t chunk = (len > 64 ? 64 : len);
-        if (CDC_Transmit_FS((uint8_t*)data, chunk) != USBD_BUSY) {
-            data  += chunk;
-            len   -= chunk;
-        }
-        // si está ocupado, lo reintentamos en el siguiente bucle
+        usb_enqueue_tx(data, chunk);
+        data  += chunk;
+        len   -= chunk;
     }
 }
 
@@ -348,6 +369,50 @@ void USB_Debug(const char *fmt, ...) {
     }
 
     va_end(ap);
+}
+
+
+uint8_t usb_enqueue_tx(const uint8_t *data, uint16_t len) {
+    uint16_t next;
+    for (uint16_t i = 0; i < len; i++) {
+        next = (tx_head + 1) & USB_TX_BUF_MASK;
+        if (next == tx_tail) {
+            // buffer lleno
+            return 0;
+        }
+        usb_tx_buf[tx_head] = data[i];
+        tx_head = next;
+    }
+    if (usb_tx_busy == 0) {
+        usb_service_tx();
+    }
+    return 1;
+}
+
+void usb_service_tx(void) {
+    USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef*)hUsbDeviceFS.pClassData;
+
+    // 1) Si antes estábamos “busy” y el driver ya terminó, liberamos la bandera
+    if (usb_tx_busy && hcdc->TxState == 0) {
+        usb_tx_busy = 0;
+    }
+
+    // 2) Si aún está ocupada la línea o no hay datos, no hacemos nada
+    if (usb_tx_busy || tx_head == tx_tail) {
+        return;
+    }
+
+    // 3) Preparamos el siguiente chunk y lo enviamos
+    uint8_t chunk[64];
+    uint16_t cnt = 0;
+    while (cnt < 64 && tx_tail != tx_head) {
+        chunk[cnt++] = usb_tx_buf[tx_tail];
+        tx_tail = (tx_tail + 1) & USB_TX_BUF_MASK;
+    }
+    if (cnt) {
+        usb_tx_busy = 1;
+        CDC_Transmit_FS(chunk, cnt);
+    }
 }
 
 //void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
@@ -474,47 +539,35 @@ int main(void)
 	  if(is10ms) {
 		  is10ms = 0;
 
+		  ESP01_Timeout10ms();  // Requerido por la librería ESP01
+		  ESP01_Task(); // Procesa tramas ESP01 recibidas
+		  UNER_Task(); // Procesa tramas UNER recibidas
+
+		  if (unerTx.indexR != unerTx.indexW) {
+		      UNER_SendSerial(&unerTx);
+		  }
+
 		  tmo100ms--;
 		  if (tmo100ms == 0) {
 			  tmo100ms = 10;
 			  HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin); // Blink LED
 		  }
 
+
 		  aliveCounter++;
 		  if (aliveCounter >= 500) {
-		      aliveCounter = 0;
-		      UNER_SendAlive();
+			  aliveCounter = 0;
+			  if (ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED && !ESP01_IsSending())
+				  UNER_SendAlive();
 		  }
 
 		  sendInfoCounter++;
 		  if (sendInfoCounter >= 50) {
-		      sendInfoCounter = 0;
-		      if (UNER_ShouldSendAllSensors()) {
-		          UNER_SendAllSensors();
-		      }
+			  sendInfoCounter = 0;
+			  if (UNER_ShouldSendAllSensors()) {
+				  UNER_SendAllSensors();
+			  }
 		  }
-
-		  ESP01_Timeout10ms();  // Requerido por la librería ESP01
-		  ESP01_Task(); // Procesa tramas ESP01 recibidas
-
-
-		  if (espUSBBufIr != espUSBBufIw) {
-		      uint8_t tmp[64];
-		      uint16_t cnt = 0;
-		      while (espUSBBufIr != espUSBBufIw && cnt < sizeof(tmp)) {
-		          tmp[cnt++] = espUSBBuf[espUSBBufIr++];
-		          espUSBBufIr &= (ESP_USB_BUF_SIZE - 1);
-		      }
-		      CDC_Transmit_FS(tmp, cnt);
-		  }
-
-		  while (esp01IrRx != esp01IwRx) {
-			  uint8_t b = esp01RxBuf[esp01IrRx++];
-			  esp01IrRx &= (ESP01RXBUFAT - 1);   // wrap-around
-			  UNER_PushByte(b);                  // turn5file2: UNER_PushByte guarda en unerRx->buff[]
-		  }
-
-		  UNER_Task(); // Procesa tramas UNER recibidas
 
 		  mpu6050Counter++;
 		  if (mpu6050Counter >= 2) {
@@ -533,10 +586,51 @@ int main(void)
 			  mpuDataReady    = 1;
 		  }
 
-		  if (mpuDataReady) {
+		  if (mpuDataReady) {		// Valores de MPU6050 listos para ser utilizados
 			  mpuDataReady = 0;
 			  MPU6050_GetAccel(&ax, &ay, &az);
 			  MPU6050_GetGyro(&gx, &gy, &gz);
+
+			  /*if (!ema_initialized) {
+			      // Primera muestra: inicializar
+			      ax_ema = ax;  ay_ema = ay;  az_ema = az;
+			      gx_ema = gx;  gy_ema = gy;  gz_ema = gz;
+			      ema_initialized = 1;
+			  } else {
+			      // EMA: new_ema = ((old_ema*(EMA_DIV-1)) + sample) / EMA_DIV
+			      ax_ema = ((ax_ema * (EMA_DIV - 1)) + ax) / EMA_DIV;
+			      ay_ema = ((ay_ema * (EMA_DIV - 1)) + ay) / EMA_DIV;
+			      az_ema = ((az_ema * (EMA_DIV - 1)) + az) / EMA_DIV;
+
+			      gx_ema = ((gx_ema * (EMA_DIV - 1)) + gx) / EMA_DIV;
+			      gy_ema = ((gy_ema * (EMA_DIV - 1)) + gy) / EMA_DIV;
+			      gz_ema = ((gz_ema * (EMA_DIV - 1)) + gz) / EMA_DIV;
+			  }
+
+			  // Sobrescribimos las variables que UNER enviará:
+			  ax = (int16_t)ax_ema;
+			  ay = (int16_t)ay_ema;
+			  az = (int16_t)az_ema;
+
+			  gx = (int16_t)gx_ema;
+			  gy = (int16_t)gy_ema;
+			  gz = (int16_t)gz_ema;*/
+		  }
+
+		  /*if (espUSBBufIr != espUSBBufIw) {
+			  uint8_t tmp[64];
+			  uint16_t cnt = 0;
+			  while (espUSBBufIr != espUSBBufIw && cnt < sizeof(tmp)) {
+				  tmp[cnt++] = espUSBBuf[espUSBBufIr++];
+				  espUSBBufIr &= (ESP_USB_BUF_SIZE - 1);
+			  }
+			  CDC_Transmit_FS(tmp, cnt);
+		  }*/
+
+		  while (esp01IrRx != esp01IwRx) {
+			  uint8_t b = esp01RxBuf[esp01IrRx++];
+			  esp01IrRx &= (ESP01RXBUFAT - 1);   // wrap-around
+			  UNER_PushByte(b);                  // turn5file2: UNER_PushByte guarda en unerRx->buff[]
 		  }
 
 	  }
@@ -556,7 +650,7 @@ int main(void)
 
 	  }*/
 
-
+	  usb_service_tx();
 
 	  if (unerTx.indexR != unerTx.indexW && ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED && !ESP01_IsSending()) {
 	  	uint8_t dataToSend[TXBUFSIZE];
@@ -577,8 +671,8 @@ int main(void)
 	      dataTx = 0;
 	  }
 
-	  if(CDC_Transmit_FS(BufUSBTx, nBytesTx) == USBD_OK)
-		  nBytesTx = 0;
+	  //if(CDC_Transmit_FS(BufUSBTx, nBytesTx) == USBD_OK)
+		//  nBytesTx = 0;
   }
   /* USER CODE END 3 */
 }
