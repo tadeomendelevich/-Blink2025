@@ -37,11 +37,11 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define CH_PD_GPIO_Port  	GPIOB
-#define CH_PD_Pin        	GPIO_PIN_11
+#define CH_PD_GPIO_Port  	GPIOA
+#define CH_PD_Pin        	GPIO_PIN_8
 
 #define USB_TX_BUF_SIZE 	256
-#define USB_TX_BUF_MASK 	(USB_TX_BUF_SIZE-1)  // tamaño potencia de 2
+#define USB_TX_BUF_MASK 	(USB_TX_BUF_SIZE-1)
 
 #define EMA_DIV 			40
 
@@ -64,6 +64,7 @@ DMA_HandleTypeDef hdma_i2c1_rx;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim3;
 
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
@@ -127,6 +128,9 @@ static volatile uint16_t tx_head = 0;
 static volatile uint16_t tx_tail = 0;
 static volatile uint8_t usb_tx_busy = 0;
 
+int16_t motorRightVelocity = 0;
+int16_t motorLeftVelocity  = 0;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -139,6 +143,7 @@ static void MX_USART2_UART_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
 void USBRxData(uint8_t *buf, int len);
 static int  uart_send_byte(uint8_t byte);
@@ -163,6 +168,9 @@ void USB_DebugUInt(unsigned int v);		// Envía un entero sin signo en formato de
 void USB_Debug(const char *fmt, ...);	// Mini-printf para debug: soporta %s, %c, %d/%u, %X y %%.
 uint8_t usb_enqueue_tx(const uint8_t *data, uint16_t len);
 void usb_service_tx(void);
+
+void PWM_init();
+void MotorControl(int16_t setMotorRight, int16_t setMotorLeft);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -246,7 +254,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 		adcCounter++;
 	}
 
-	if (htim->Instance == TIM2) {	// 10ms
+	if (htim->Instance == TIM3) {	// 10ms
 		is10ms = 1;
 	}
 }
@@ -404,6 +412,47 @@ void usb_service_tx(void) {
     }
 }
 
+void PWM_init() {
+	HAL_TIM_Base_Start(&htim2);
+
+	HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+	HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
+	HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
+	HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_4);
+
+	__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 0);
+	__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 0);
+	__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 0);
+	__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, 0);
+}
+
+// Motor 1: CH1 = avance (PA15), CH2 = retroceso (PB3)
+void MotorControl(int16_t setMotorRight, int16_t setMotorLeft) {
+	int16_t auxSetMotor;
+
+	auxSetMotor = (abs(setMotorRight)*TIM2->ARR)/100;
+	if(setMotorRight >= 0){
+		//SET MOTOR DERECHO ADELANTE
+		__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, auxSetMotor);
+		__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 0);
+	}else{
+		//SET MOTOR DERECHO REVERSA
+		__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 0);
+		__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, auxSetMotor);
+	}
+
+	auxSetMotor = (abs(setMotorLeft)*TIM2->ARR)/100;
+	if(setMotorLeft >= 0){
+		//SET MOTOR IZQUIERDO ADELANTE
+		__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 0);
+		__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, auxSetMotor);
+	}else{
+		//SET MOTOR IZQUIERDO REVERSA
+		__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, auxSetMotor);
+		__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, 0);
+	}
+}
+
 //void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
 //    if (hadc->Instance == ADC1) {	// Interrupcion de conversion de los ADC listos
 //        flag_adc = 1;
@@ -450,18 +499,18 @@ int main(void)
   MX_ADC1_Init();
   MX_TIM2_Init();
   MX_I2C1_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
-  if (HAL_TIM_Base_Start_IT(&htim1) != HAL_OK) {
-	  Error_Handler();
-  }
-
   CDC_Attach_Rx(USBRxData);
   nBytesTx = 0;
 
   HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValues, 8);
 
   HAL_TIM_Base_Start_IT(&htim1);
-  HAL_TIM_Base_Start_IT(&htim2);
+  HAL_TIM_Base_Start_IT(&htim3);
+
+  PWM_init();
+
   HAL_UART_Receive_IT(&huart1, &dataRx, 1);
 
   static _sESP01Handle esp01Handle = {
@@ -503,6 +552,9 @@ int main(void)
   mpu6050Counter = 0;
   aliveCounter = 0;
   sendAllSensors = 0;
+
+  motorRightVelocity = 20;  // 50% adelante
+  motorLeftVelocity  = 20;  // 50% adelante
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -598,23 +650,7 @@ int main(void)
 			  gz = (int16_t)gz_ema;
 		  }
 
-		  /*adcCounter++;
-		  if (adcCounter >= 200) {
-			  adcCounter = 0;
-		      int len = sprintf(usbBuffer,
-		          "ADC: %d,%d,%d,%d,%d,%d,%d,%d\r\n",
-		          adcValues[0], adcValues[1], adcValues[2], adcValues[3],
-		          adcValues[4], adcValues[5], adcValues[6], adcValues[7]);
-		      // Envío no bloqueante por USB
-		      USB_DebugSend((uint8_t*)usbBuffer, len);
-		      // Reinicio lectura ADC’s
-		      HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValues, 8);
-		  }*/
-
-
-
-
-
+		  MotorControl(motorRightVelocity, motorLeftVelocity);
 	  }
 
 	  usb_service_tx();
@@ -901,14 +937,15 @@ static void MX_TIM2_Init(void)
 
   TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
 
   /* USER CODE BEGIN TIM2_Init 1 */
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 7199;
+  htim2.Init.Prescaler = 71;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 99;
+  htim2.Init.Period = 999;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
@@ -920,15 +957,85 @@ static void MX_TIM2_Init(void)
   {
     Error_Handler();
   }
+  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
   {
     Error_Handler();
   }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE BEGIN TIM2_Init 2 */
 
   /* USER CODE END TIM2_Init 2 */
+  HAL_TIM_MspPostInit(&htim2);
+
+}
+
+/**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 7199;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 99;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
 
 }
 

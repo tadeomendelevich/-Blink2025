@@ -284,7 +284,7 @@ _eESP01STATUS ESP01_Send(uint8_t *buf, uint16_t irRingBuf, uint16_t length, uint
 		return ESP01_SEND_READY;
 	}
 
-	if(aDbgStr != NULL)
+	//if(aDbgStr != NULL)
 		//aDbgStr("+&DBGSENDING DATA BUSY\n");
 
 	return ESP01_SEND_BUSY;
