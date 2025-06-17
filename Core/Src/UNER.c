@@ -39,8 +39,11 @@ static int16_t *p_gx = NULL, *p_gy = NULL, *p_gz = NULL;
 
 static uint8_t sendAllSensorsFlag = 0;
 
-static uint16_t *p_adcBuf = NULL;	// pun
+static uint16_t *p_adcBuf = NULL;	// // Punteros a las variables de adc en main.c
 static uint8_t   adcBufLen = 0;
+
+static int16_t *p_motorRightVel = NULL;		// Punteros a las variables de velocidad en main.c
+static int16_t *p_motorLeftVel  = NULL;
 
 void UNER_Init(_sRx *rx, _sTx *tx, int16_t *ax_ptr, int16_t *ay_ptr, int16_t *az_ptr, int16_t *gx_ptr, int16_t *gy_ptr, int16_t *gz_ptr) {
     unerRx = rx;
@@ -210,6 +213,16 @@ uint8_t putStrOntx(_sTx *dataTx, const char *str)
     return dataTx->chk ;
 }
 
+uint8_t getByteFromRx(_sRx *dataRx, uint8_t iniPos, uint8_t finalPos){
+    uint8_t getByte;
+    dataRx->indexData += iniPos;
+    dataRx->indexData &=dataRx->mask;
+    getByte = dataRx->buff[dataRx->indexData];
+    dataRx->indexData += finalPos;
+    dataRx->indexData &=dataRx->mask;
+    return getByte;
+}
+
 void decodeCommand(_sRx *dataRx, _sTx *dataTx)
 {
     switch(dataRx->buff[dataRx->indexData]){
@@ -278,6 +291,30 @@ void decodeCommand(_sRx *dataRx, _sTx *dataTx)
 
 			putByteOnTx(dataTx, dataTx->chk);
         	break;
+        case SETMOTORSPEED:
+			putHeaderOnTx(dataTx, SETMOTORSPEED, 2);
+			putByteOnTx(dataTx, ACK );
+			putByteOnTx(dataTx, dataTx->chk);
+			myWord.ui8[0]=getByteFromRx(dataRx,1,0);
+			myWord.ui8[1]=getByteFromRx(dataRx,1,0);
+			myWord.ui8[2]=getByteFromRx(dataRx,1,0);
+			myWord.ui8[3]=getByteFromRx(dataRx,1,0);
+			int16_t vLeft = myWord.i32;
+			// clamp al rango [-100, +100]
+			if      (vLeft >  100) vLeft =  100;
+			else if (vLeft < -100) vLeft = -100;
+			// sólo si el puntero está registrado
+			if (p_motorLeftVel) *p_motorLeftVel = vLeft;
+
+			myWord.ui8[0]=getByteFromRx(dataRx,1,0);
+			myWord.ui8[1]=getByteFromRx(dataRx,1,0);
+			myWord.ui8[2]=getByteFromRx(dataRx,1,0);
+			myWord.ui8[3]=getByteFromRx(dataRx,1,0);
+			int16_t vRight = myWord.i32;
+			if      (vRight >  100) vRight =  100;
+			else if (vRight < -100) vRight = -100;
+			if (p_motorRightVel) *p_motorRightVel = vRight;
+		break;
         case SENDALLSENSORS:
         	sendAllSensorsFlag = !sendAllSensorsFlag;	// Si esta activa desactivo, y sino, activo
 
@@ -460,5 +497,9 @@ void UNER_RegisterADCBuffer(uint16_t *buf, uint8_t len) {
     adcBufLen  = len;
 }
 
+void UNER_RegisterMotorSpeed(int16_t *rightPtr, int16_t *leftPtr) {
+    p_motorRightVel = rightPtr;
+    p_motorLeftVel  = leftPtr;
+}
 
 /* END Private Functions*/

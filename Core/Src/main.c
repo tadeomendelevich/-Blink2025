@@ -28,6 +28,8 @@
 #include "UNER.h"
 #include "usbd_cdc_if.h"
 #include "MPU6050.h"
+#include "ssd1306.h"
+#include "fonts.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -43,7 +45,13 @@
 #define USB_TX_BUF_SIZE 	256
 #define USB_TX_BUF_MASK 	(USB_TX_BUF_SIZE-1)
 
-#define EMA_DIV 			40
+#define MPU_AVERAGE_SIZE 			40
+#define ADC_AVERAGE_SIZE 			40
+
+#define BAR_COUNT    		8
+#define BAR_SPACING  		2
+#define SCREEN_W     		SSD1306_WIDTH
+#define SCREEN_H    		SSD1306_HEIGHT
 
 
 
@@ -110,13 +118,13 @@ static const char HEX_DIGITS[] = "0123456789ABCDEF";	// Tabla de dígitos hex
 
 uint8_t *sendAllSensors;
 
-//const char *wifiSSID     = "MEGACABLE FIBRA-2.4G-ckd0";
-//const char *wifiPassword = "djg19dlk";
-//const char *wifiIp = "192.168.100.5";
+const char *wifiSSID     = "MEGACABLE FIBRA-2.4G-ckd0";
+const char *wifiPassword = "djg19dlk";
+const char *wifiIp = "192.168.100.5";
 
-const char *wifiSSID     = "Delco_Mendelevich";
-const char *wifiPassword = "toyotakia";
-const char *wifiIp = "192.168.123.57";
+//const char *wifiSSID     = "Delco_Mendelevich";
+//const char *wifiPassword = "toyotakia";
+//const char *wifiIp = "192.168.123.57";
 
 
 static int32_t ax_ema = 0, ay_ema = 0, az_ema = 0;
@@ -130,6 +138,14 @@ static volatile uint8_t usb_tx_busy = 0;
 
 int16_t motorRightVelocity = 0;
 int16_t motorLeftVelocity  = 0;
+
+static uint32_t adcSum[BAR_COUNT] = {0};	// Sumas acumuladas de las últimas ADC_AVERAGE_SIZE muestras
+static uint16_t adcBuf[BAR_COUNT][ADC_AVERAGE_SIZE] = {{0}};		// Buffers circulares: [canal][posición en la ventana]
+static uint8_t maIndex = 0;		// Índice circular común para todos los canales
+
+
+// Valores promediados que luego usaremos para dibujar
+static uint16_t adcAvg[BAR_COUNT] = {0};
 
 /* USER CODE END PV */
 
@@ -171,10 +187,36 @@ void usb_service_tx(void);
 
 void PWM_init();
 void MotorControl(int16_t setMotorRight, int16_t setMotorLeft);
+
+void my_ssd1306_init(void *ctx);
+int my_ssd1306_write_cmd(void *ctx, uint8_t cmd);
+int my_ssd1306_write_data(void *ctx, const uint8_t *data, uint16_t len);
+int my_ssd1306_write_data_async(void *ctx, const uint8_t *data, uint16_t len);
+uint8_t my_ssd1306_is_busy(void *ctx);
+void my_ssd1306_errorCb(void *ctx, int err);
+void my_ssd1306_delay_ms(void *ctx, uint32_t ms);
+void DrawADC_Bars(void);
+void UpdateADC_MovingAverage(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+SSD1306_Ctx_t ssd_ctx = {
+  .hi2c      = &hi2c1,
+  .busy_flag = &i2c1_tx_busy
+};
+
+static const SSD1306_Platform_t SSD1306_plat = {
+  .ctx              = &ssd_ctx,
+  .init             = my_ssd1306_init,
+  .write_cmd        = my_ssd1306_write_cmd,
+  .write_data       = my_ssd1306_write_data,
+  .write_data_async = my_ssd1306_write_data_async,
+  .is_busy          = my_ssd1306_is_busy,
+  .delay_ms         = my_ssd1306_delay_ms,
+  .onError          = my_ssd1306_errorCb
+};
+
 MPU6050_Platform_t mpuPlat = {
   .ctx         = &hi2c1,
   .writeReg    = mpu_writeReg,
@@ -453,6 +495,121 @@ void MotorControl(int16_t setMotorRight, int16_t setMotorLeft) {
 	}
 }
 
+void my_ssd1306_init(void *ctx) {
+    MX_I2C1_Init();
+}
+
+// Callback comando
+int my_ssd1306_write_cmd(void *ctx, uint8_t cmd) {
+    HAL_StatusTypeDef st = HAL_I2C_Master_Transmit(&hi2c1, SSD1306_I2C_ADDR, (uint8_t[]){0x00, cmd}, 2, HAL_MAX_DELAY);
+
+    if (st != HAL_OK) {
+        SSD1306_plat.onError(ctx, (int)st);
+        return -1;
+    }
+    return 0;
+}
+
+
+// Callback datos bloqueante
+int my_ssd1306_write_data(void *ctx, const uint8_t *data, uint16_t len) {
+    // Desempaquetar el contexto
+    SSD1306_Ctx_t *c = (SSD1306_Ctx_t*)ctx;
+    // Preparo buffer con control byte + datos
+    uint8_t buf[1 + SSD1306_WIDTH];
+    buf[0] = 0x40;
+    memcpy(&buf[1], data, len);
+    // Transmisión bloqueante
+    HAL_StatusTypeDef st = HAL_I2C_Master_Transmit(
+        c->hi2c,
+        SSD1306_I2C_ADDR,
+        buf,
+        len + 1,
+        HAL_MAX_DELAY
+    );
+    if (st != HAL_OK) {
+        // Notifico el fallo (p.ej. por USB y LED)
+        SSD1306_plat.onError(ctx, (int)st);
+        return -1;
+    }
+    return 0;
+}
+
+// Callback datos no bloqueante (DMA)
+int my_ssd1306_write_data_async(void *ctx, const uint8_t *data, uint16_t len) {
+    SSD1306_Ctx_t *c = (SSD1306_Ctx_t*)ctx;
+    // 1) Si el bus está ocupado, lanza error
+    if (*c->busy_flag) {
+        SSD1306_plat.onError(ctx, -1);     // -1 = BUSY_ERROR
+        return -1;
+    }
+
+    // 2) Preparo buffer (control byte + datos)
+    static uint8_t dmaBuf[1 + SSD1306_WIDTH];
+    dmaBuf[0] = 0x40;
+    memcpy(&dmaBuf[1], data, len);
+
+    // 3) Marco el bus como ocupado
+    *c->busy_flag = 1;
+
+    // 4) Lanzo la DMA
+    HAL_StatusTypeDef st = HAL_I2C_Master_Transmit_DMA(c->hi2c, SSD1306_I2C_ADDR, dmaBuf,len + 1);
+    if (st != HAL_OK) {
+        // si falla al arrancar, limpio flag y notifico
+        *c->busy_flag = 0;
+        SSD1306_plat.onError(ctx, (int)st);
+        return -1;
+    }
+    return 0;
+}
+
+
+// Callback busy-check
+uint8_t my_ssd1306_is_busy(void *ctx) {
+    return i2c1_tx_busy ? 1 : 0;
+}
+
+void my_ssd1306_errorCb(void *ctx, int err) {
+    USB_Debug("ERROR SSD1306: 0x%02X\r\n", err);
+    i2c1_tx_busy = 0;
+	SSD1306_ResetUpdateState();
+}
+
+// Callback delay
+void my_ssd1306_delay_ms(void *ctx, uint32_t ms) {
+    HAL_Delay(ms);
+}
+
+void DrawADC_Bars(void) {
+	SSD1306_Fill(SSD1306_COLOR_BLACK); 	// 1. Limpia todo el buffer
+
+	const uint16_t bar_width = (SCREEN_W - (BAR_COUNT + 1)*BAR_SPACING) / BAR_COUNT;	// 2. Calcula ancho fijo de cada barra
+
+	// 3. Recorre cada canal ADC
+	for (uint8_t i = 0; i < BAR_COUNT; i++) {
+		uint16_t v = adcAvg[i] > 4000 ? 4000 : adcAvg[i];	// a) limitar valor a 0..4000
+		uint16_t h = v * SCREEN_H / 4000;		// b) convertir a altura en píxeles
+		uint16_t x0 = BAR_SPACING + i * (bar_width + BAR_SPACING);		// c) calcular posición X
+		uint16_t y0 = SCREEN_H - h;		// d) la barra “crece” desde la base
+
+		SSD1306_DrawFilledRectangle(x0, y0, bar_width, h, SSD1306_COLOR_WHITE);		// e) dibuja el rectángulo relleno
+
+	}
+    SSD1306_RequestUpdate();  // refresco no bloqueante
+}
+
+void UpdateADC_MovingAverage(void) {
+    for (uint8_t ch = 0; ch < BAR_COUNT; ++ch) {
+        // Resta la muestra más antigua e incluye la nueva
+        adcSum[ch] = adcSum[ch] - adcBuf[ch][maIndex] + adcValues[ch];
+
+        adcBuf[ch][maIndex] = adcValues[ch];	        // Guarda la nueva en el buffer
+
+        adcAvg[ch] = adcSum[ch] / ADC_AVERAGE_SIZE;	        // Calcula el promedio truncado
+    }
+    maIndex = (maIndex + 1) % ADC_AVERAGE_SIZE;	    // Avanza en el buffer circular
+}
+
 //void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
 //    if (hadc->Instance == ADC1) {	// Interrupcion de conversion de los ADC listos
 //        flag_adc = 1;
@@ -538,6 +695,7 @@ int main(void)
   unerTx.mask = TXBUFSIZE - 1;
   UNER_Init(&unerRx, &unerTx, &ax, &ay, &az, &gx, &gy, &gz);
   UNER_RegisterADCBuffer(adcValues, 8);  // array adcValues[8]
+  UNER_RegisterMotorSpeed(&motorRightVelocity, &motorLeftVelocity);
 
   MPU6050_RegisterPlatform(&mpuPlat);
   int status = MPU6050_Init();
@@ -555,6 +713,20 @@ int main(void)
 
   motorRightVelocity = 20;  // 50% adelante
   motorLeftVelocity  = 20;  // 50% adelante
+
+  HAL_Delay(500);
+  SSD1306_RegisterPlatform(&SSD1306_plat);
+  SSD1306_Init();
+
+  SSD1306_GotoXY(35, 5);
+  SSD1306_Puts("TADEO",   &Font_11x18, SSD1306_COLOR_WHITE);
+  SSD1306_GotoXY(5, 35);
+  SSD1306_Puts("MENDELEVICH",&Font_11x18, SSD1306_COLOR_WHITE);
+
+  SSD1306_UpdateScreen_Blocking();
+  HAL_Delay(1000);
+  SSD1306_Fill(SSD1306_COLOR_BLACK);
+  SSD1306_UpdateScreen_Blocking();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -630,14 +802,14 @@ int main(void)
 			      gx_ema = gx;  gy_ema = gy;  gz_ema = gz;
 			      ema_initialized = 1;
 			  } else {
-			      // EMA: new_ema = ((old_ema*(EMA_DIV-1)) + sample) / EMA_DIV
-			      ax_ema = ((ax_ema * (EMA_DIV - 1)) + ax) / EMA_DIV;
-			      ay_ema = ((ay_ema * (EMA_DIV - 1)) + ay) / EMA_DIV;
-			      az_ema = ((az_ema * (EMA_DIV - 1)) + az) / EMA_DIV;
+			      // EMA: new_ema = ((old_ema*(MPU_AVERAGE_SIZE-1)) + sample) / MPU_AVERAGE_SIZE
+			      ax_ema = ((ax_ema * (MPU_AVERAGE_SIZE - 1)) + ax) / MPU_AVERAGE_SIZE;
+			      ay_ema = ((ay_ema * (MPU_AVERAGE_SIZE - 1)) + ay) / MPU_AVERAGE_SIZE;
+			      az_ema = ((az_ema * (MPU_AVERAGE_SIZE - 1)) + az) / MPU_AVERAGE_SIZE;
 
-			      gx_ema = ((gx_ema * (EMA_DIV - 1)) + gx) / EMA_DIV;
-			      gy_ema = ((gy_ema * (EMA_DIV - 1)) + gy) / EMA_DIV;
-			      gz_ema = ((gz_ema * (EMA_DIV - 1)) + gz) / EMA_DIV;
+			      gx_ema = ((gx_ema * (MPU_AVERAGE_SIZE - 1)) + gx) / MPU_AVERAGE_SIZE;
+			      gy_ema = ((gy_ema * (MPU_AVERAGE_SIZE - 1)) + gy) / MPU_AVERAGE_SIZE;
+			      gz_ema = ((gz_ema * (MPU_AVERAGE_SIZE - 1)) + gz) / MPU_AVERAGE_SIZE;
 			  }
 
 			  // Sobrescribimos las variables que UNER enviará:
@@ -651,9 +823,61 @@ int main(void)
 		  }
 
 		  MotorControl(motorRightVelocity, motorLeftVelocity);
+
+		  UpdateADC_MovingAverage();
+
+		  if (SSD1306_IsUpdateDone()) {
+			  DrawADC_Bars();
+		  }
 	  }
 
 	  usb_service_tx();
+
+	  /*if (mpuDataReady && SSD1306_IsUpdateDone()) {
+		  mpuDataReady = 0;
+
+		  MPU6050_GetAccel(&ax, &ay, &az);
+		  MPU6050_GetGyro(&gx, &gy, &gz);
+
+		  SSD1306_Fill(SSD1306_COLOR_BLACK);
+
+		  SSD1306_GotoXY(0, 0);
+		  SSD1306_Puts("Valores MPU6050:", &Font_7x10, SSD1306_COLOR_WHITE);
+
+		  SSD1306_GotoXY(0, 20);
+		  SSD1306_Puts("AX:", &Font_7x10, SSD1306_COLOR_WHITE);
+		  char num[7];
+		  itoa(ax, num, 10);
+		  SSD1306_Puts(num, &Font_7x10, SSD1306_COLOR_WHITE);
+		  SSD1306_Puts(" AY:", &Font_7x10, SSD1306_COLOR_WHITE);
+		  itoa(ay, num, 10);
+		  SSD1306_Puts(num, &Font_7x10, SSD1306_COLOR_WHITE);
+
+		  // Fila 2: AZ
+		  SSD1306_GotoXY(0, 30);
+		  SSD1306_Puts("AZ:", &Font_7x10, SSD1306_COLOR_WHITE);
+		  itoa(az, num, 10);
+		  SSD1306_Puts(num, &Font_7x10, SSD1306_COLOR_WHITE);
+
+		  // Fila 3: GX, GY
+		  SSD1306_GotoXY(0, 40);
+		  SSD1306_Puts("GX:", &Font_7x10, SSD1306_COLOR_WHITE);
+		  itoa(gx, num, 10);
+		  SSD1306_Puts(num, &Font_7x10, SSD1306_COLOR_WHITE);
+		  SSD1306_Puts(" GY:", &Font_7x10, SSD1306_COLOR_WHITE);
+		  itoa(gy, num, 10);
+		  SSD1306_Puts(num, &Font_7x10, SSD1306_COLOR_WHITE);
+
+		  // Fila 4: GZ
+		  SSD1306_GotoXY(0, 50);
+		  SSD1306_Puts("GZ:", &Font_7x10, SSD1306_COLOR_WHITE);
+		  itoa(gz, num, 10);
+		  SSD1306_Puts(num, &Font_7x10, SSD1306_COLOR_WHITE);
+
+		  SSD1306_RequestUpdate();
+	  }*/
+
+	  SSD1306_UpdateScreen();
 
 	  while (esp01IrRx != esp01IwRx) {
 		  uint8_t b = esp01RxBuf[esp01IrRx++];

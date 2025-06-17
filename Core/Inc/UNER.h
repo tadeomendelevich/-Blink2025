@@ -92,7 +92,7 @@ typedef union{
 typedef enum{
     ALIVE = 0xF0,
     FIRMWARE = 0xF1,
-    MOTORTEST = 0xA1,
+    SETMOTORSPEED = 0xA1,
     GETSPEED = 0xA4,
 	GETADCVALUES = 0xA5,
 	GETMPU6050VALUES = 0xA6,
@@ -116,6 +116,8 @@ uint8_t putByteOnTx(_sTx *dataTx, uint8_t byte);
 
 uint8_t putStrOntx(_sTx *dataTx, const char *str);
 
+uint8_t getByteFromRx(_sRx *dataRx, uint8_t iniPos, uint8_t finalPos);
+
 void decodeCommand(_sRx *dataRx, _sTx *dataTx);
 
 void UNER_SendAlive(void);
@@ -132,5 +134,8 @@ void UNER_SendSerial(_sTx *tx);
  * @param len  Número de elementos (p. ej. 8).
  */
 void UNER_RegisterADCBuffer(uint16_t *buf, uint8_t len);
+
+/**< Registra dónde escribir la velocidad de los motores */
+void UNER_RegisterMotorSpeed(int16_t *rightPtr, int16_t *leftPtr);
 
 #endif /* ESP01_H_ */
