@@ -332,7 +332,6 @@ void USBRxData(uint8_t *buf, int len) {
     for (int i = 0; i < len; i++) {
         UNER_PushByte(buf[i]);
     }
-    // NO llamar UNER_Task() aquí
 }
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
@@ -839,13 +838,12 @@ int main(void)
       .iwRX            = &esp01IwRx,              // Índice de escritura
       .sizeBufferRX    = sizeof(esp01RxBuf)       // Tamaño del buffer
   };
+
   ESP01_Init(&esp01Handle);                        // Copia el handle interno :contentReference[oaicite:1]{index=1}
   esp01_chpd(1);  // Pone CH_PD a nivel alto para sacar al módulo de reset
   HAL_Delay(100);
-
-  ESP01_AttachDebugStr(ESP01_USB_DbgStr);
   ESP01_AttachChangeState(onESP01StateChange);
-
+  ESP01_AttachDebugStr(ESP01_USB_DbgStr);
   ESP01_SetWIFI(wifiSSID, wifiPassword);
 
   int16_t ax, ay, az;	// Inicializo variables de aceleracion y giroscopio
@@ -905,9 +903,9 @@ int main(void)
 		  ESP01_Task(); 	// Procesa tramas ESP01 recibidas
 		  UNER_Task(); 		// Procesa tramas UNER recibidas
 
-		  if (unerTx.indexR != unerTx.indexW) {
-		      UNER_SendSerial(&unerTx);
-		  }
+		  //if (unerTx.indexR != unerTx.indexW) {
+		  //    UNER_SendSerial(&unerTx);
+		  //}
 
 		  tmo100ms--;
 		  if (tmo100ms == 0) {
@@ -917,10 +915,13 @@ int main(void)
 
 
 		  aliveCounter++;
-		  if (aliveCounter >= 500) {
+		  if (aliveCounter >= 200) {
 			  aliveCounter = 0;
-			  if (ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED && !ESP01_IsSending())
-				  UNER_SendAlive();
+			  if (ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED && !ESP01_IsSending()) {
+				  const char test[] = "HELLO";
+				  ESP01_Send((uint8_t*)test, 0, sizeof(test)-1, sizeof(test)-1);
+			  };
+				  //UNER_SendAlive();
 		  }
 
 		  sendModulesCounter++;
@@ -1000,19 +1001,26 @@ int main(void)
 		  UNER_PushByte(b);                  // turn5file2: UNER_PushByte guarda en unerRx->buff[]
 	  }
 
-	  if (unerTx.indexR != unerTx.indexW && ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED && !ESP01_IsSending()) {
-	  	uint8_t dataToSend[TXBUFSIZE];
-	  	uint16_t i = 0;
-	  	while (unerTx.indexR != unerTx.indexW && i < sizeof(dataToSend)) {
-	  		dataToSend[i++] = unerTx.buff[unerTx.indexR++];
-	  		unerTx.indexR &= unerTx.mask;
-	  	}
-	  	if (i > 0) {
-	  		if (ESP01_Send(dataToSend, 0, i, i) != ESP01_SEND_READY) {
-	  			// opcional: volver atrás unerTx.indexR si querés reintentar más tarde
-	  		}
-	  	}
+	  if (ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED
+	      && !ESP01_IsSending()) {
+	    // 1) calcula cuántos bytes tienes pendientes
+	    uint16_t len = (unerTx.indexW + TXBUFSIZE
+	                    - unerTx.indexR) & unerTx.mask;
+	    if (len) {
+	      USB_Debug(">> Enviando %u bytes por UDP...\r\n", len);
+	      // 2) envía directamente desde el ring-buffer de UNER
+	      if (ESP01_Send(unerTx.buff,
+	                     unerTx.indexR,
+	                     len,
+	                     TXBUFSIZE)
+	          == ESP01_SEND_READY) {
+	        // 3) sólo avanza el índice si arrancó el envío
+	        unerTx.indexR = (unerTx.indexR + len)
+	                         & unerTx.mask;
+	      }
+	    }
 	  }
+
 
 	  if (dataTx) {
 	      HAL_UART_Transmit(&huart1, &dataTx, 1, 100);

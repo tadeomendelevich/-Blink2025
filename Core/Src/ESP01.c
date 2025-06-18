@@ -12,6 +12,8 @@
 #include "usbd_cdc_if.h"    // para CDC_Transmit_FS()
 extern USBD_HandleTypeDef hUsbDeviceFS;
 
+#include "UNER.h"
+
 extern const char *wifiSSID, *wifiPassword, *wifiIp;
 
 static enum {
@@ -284,8 +286,8 @@ _eESP01STATUS ESP01_Send(uint8_t *buf, uint16_t irRingBuf, uint16_t length, uint
 		return ESP01_SEND_READY;
 	}
 
-	//if(aDbgStr != NULL)
-		//aDbgStr("+&DBGSENDING DATA BUSY\n");
+	if(aDbgStr != NULL)
+		aDbgStr("+&DBGSENDING DATA BUSY\n");
 
 	return ESP01_SEND_BUSY;
 }
@@ -320,7 +322,6 @@ void ESP01_Timeout10ms(){
 }
 
 void ESP01_Task(){
-
 	if(esp01irRXAT != esp01iwRXAT)
 		ESP01ATDecode();
 
@@ -343,9 +344,6 @@ int ESP01_IsHDRRST(){
 		return 1;
 	return 0;
 }
-
-
-
 
 /* Private Functions */
 static void ESP01ATDecode(){
@@ -456,6 +454,9 @@ static void ESP01ATDecode(){
 					esp01Flags.bit.WIFICONNECTED = 1;
 					if(aESP01ChangeState != NULL)
 						aESP01ChangeState(ESP01_WIFI_CONNECTED);
+
+					ESP01_USB_DbgStr("DEBUG: WIFICONNECTED = ");
+					ESP01_USB_DbgStr( esp01Flags.bit.WIFICONNECTED ? "1\r\n" : "0\r\n" );
 					break;
 				case 5://WIFI CONNECTED
 					break;
@@ -512,13 +513,13 @@ static void ESP01ATDecode(){
 			if(value == ','){
 				esp01HState = 6;
 				//f(aDbgStr != NULL)
-					//aDbgStr("+&DBGRESPONSE CIFSR\n");
+					aDbgStr("+&DBGRESPONSE CIFSR\n");
 			}
 			else{
 				esp01HState = 0;
 				esp01irRXAT--;
-				//if(aDbgStr != NULL)
-					//aDbgStr("+&DBGERROR CIFSR 5\n");
+				if(aDbgStr != NULL)
+					aDbgStr("+&DBGERROR CIFSR 5\n");
 			}
 			break;
 		case 6:
@@ -589,8 +590,8 @@ static void ESP01ATDecode(){
 			esp01nBytes--;
 			if(!esp01nBytes){
 				esp01HState = 0;
-				//if(aDbgStr != NULL)
-					//aDbgStr("+&DBGRESPONSE IPD\n");
+				if(aDbgStr != NULL)
+					aDbgStr("+&DBGRESPONSE IPD\n");
 			}
 			break;
 		default:
@@ -615,20 +616,20 @@ static void ESP01DOConnection(){
 	case ESP01ATHARDRST0:
 		esp01Handle.aDoCHPD(0);
 		if(aDbgStr)
-			//aDbgStr("+&DBGESP01HARDRESET0\n");
+			aDbgStr("+&DBGESP01HARDRESET0\n");
 		esp01ATSate = ESP01ATHARDRST1;
 		esp01TimeoutTask = 20;    // 20×10ms = 200 ms
 		break;
 	case ESP01ATHARDRST1:
 		esp01Handle.aDoCHPD(1);
 		if(aDbgStr)
-			//aDbgStr("+&DBGESP01HARDRESET1\n");
+			aDbgStr("+&DBGESP01HARDRESET1\n");
 		esp01ATSate = ESP01ATHARDRSTSTOP;
 		esp01TimeoutTask = 500;
 		break;
 	case ESP01ATHARDRSTSTOP:
 		if(aDbgStr)
-			//aDbgStr("\r\n>>> ESP01: Hard reset complete, moving to AT sequence <<<\r\n");
+			aDbgStr("\r\n>>> ESP01: Hard reset complete, moving to AT sequence <<<\r\n");
 		esp01ATSate = ESP01ATAT;
 		esp01TriesAT = 4;
 		break;
@@ -646,30 +647,30 @@ static void ESP01DOConnection(){
 		esp01Flags.bit.ATRESPONSEOK = 0;
 		ESP01StrToBufTX(ATAT);
 		if(aDbgStr != NULL)
-			//aDbgStr("+&DBGESP01AT\n");
+			aDbgStr("+&DBGESP01AT\n");
 		esp01ATSate = ESP01ATRESPONSE;
 		break;
 	case ESP01ATRESPONSE:
 		if(esp01Flags.bit.ATRESPONSEOK) {
 			if(aDbgStr)
-				//aDbgStr("\r\n+++ ESP01: Received OK for AT +++\r\n");
+				aDbgStr("\r\n+++ ESP01: Received OK for AT +++\r\n");
 			esp01ATSate = ESP01ATCWMODE;
 		} else {
 			if(aDbgStr)
-				//aDbgStr("\r\nxxx ESP01: No OK for AT, retrying... xxx\r\n");
+				aDbgStr("\r\nxxx ESP01: No OK for AT, retrying... xxx\r\n");
 			esp01ATSate = ESP01ATAT;
 		}
 		break;
 	case ESP01ATCWMODE:
 		ESP01StrToBufTX(ATCWMODE);
 		if(aDbgStr)
-			//aDbgStr("+&DBGESP01ATCWMODE\n");
+			aDbgStr("+&DBGESP01ATCWMODE\n");
 		esp01ATSate = ESP01ATCIPMUX;
 		break;
 	case ESP01ATCIPMUX:
 		ESP01StrToBufTX(ATCIPMUX);
 		if(aDbgStr)
-			//aDbgStr("+&DBGESP01ATCIPMUX\n");
+			aDbgStr("+&DBGESP01ATCIPMUX\n");
 		esp01ATSate = ESP01ATCWJAP;
 		break;
 	case ESP01ATCWJAP:
@@ -690,7 +691,7 @@ static void ESP01DOConnection(){
 		ESP01ByteToBufTX('\r');
 		ESP01ByteToBufTX('\n');
 		if(aDbgStr)
-			//aDbgStr("+&DBGESP01ATCWJAP\n");
+			aDbgStr("+&DBGESP01ATCWJAP\n");
 		esp01Flags.bit.ATRESPONSEOK = 0;
 		esp01ATSate = ESP01CWJAPRESPONSE;
 		esp01TimeoutTask = 1500;
@@ -698,13 +699,13 @@ static void ESP01DOConnection(){
 	case ESP01CWJAPRESPONSE:
 		if(esp01Flags.bit.ATRESPONSEOK){
 			if (aDbgStr) {
-				//aDbgStr("\r\n+++ ESP01: Joined AP successfully +++\r\n");
+				aDbgStr("\r\n+++ ESP01: Joined AP successfully +++\r\n");
 			}
 			esp01ATSate = ESP01ATCIFSR;
 			esp01TriesAT = 4;
 		} else {
 			if (aDbgStr) {
-				//aDbgStr("\r\nxxx ESP01: Failed to join AP, retrying AT... xxx\r\n");
+				aDbgStr("\r\nxxx ESP01: Failed to join AP, retrying AT... xxx\r\n");
 			}
 			esp01ATSate = ESP01ATAT;
 		}
@@ -713,16 +714,16 @@ static void ESP01DOConnection(){
 		esp01LocalIP[0] = '\0';
 		ESP01StrToBufTX(ATCIFSR);
 		if(aDbgStr)
-			//aDbgStr("+&DBGESP01CIFSR\n");
+			aDbgStr("+&DBGESP01CIFSR\n");
 		esp01Flags.bit.ATRESPONSEOK = 0;
 		esp01ATSate = ESP01CIFSRRESPONSE;
 		break;
 	case ESP01CIFSRRESPONSE:
 		if(esp01Flags.bit.ATRESPONSEOK) {
 			if (aDbgStr) {
-				//aDbgStr("\r\n+++ ESP01: Local IP received: ");
-				//aDbgStr(esp01LocalIP);
-				//aDbgStr(" +++\r\n");
+				aDbgStr("\r\n+++ ESP01: Local IP received: ");
+				aDbgStr(esp01LocalIP);
+				aDbgStr(" +++\r\n");
 			}
 			esp01ATSate = ESP01ATCIPCLOSE;
 		} else {
@@ -847,7 +848,7 @@ void ESP01_USB_DbgStr(const char *dbgStr) {
 void onESP01StateChange(_eESP01STATUS state) {
     switch(state) {
         case ESP01_WIFI_CONNECTED:
-            //ESP01_USB_DbgStr("\r\n>>> ESP01: WIFI_CONNECTED (got IP) <<<\r\n");
+            ESP01_USB_DbgStr("\r\n>>> ESP01: WIFI_CONNECTED (got IP) <<<\r\n");
             break;
         case ESP01_WIFI_NEW_IP: {
         	USB_DebugStr("\r\n>>> ESP01: New IP Address = ");
@@ -857,7 +858,7 @@ void onESP01StateChange(_eESP01STATUS state) {
             break;
         }
         case ESP01_WIFI_DISCONNECTED:
-            //ESP01_USB_DbgStr("\r\nxxx ESP01: WIFI_DISCONNECTED xxx\r\n");
+            ESP01_USB_DbgStr("\r\nxxx ESP01: WIFI_DISCONNECTED xxx\r\n");
             // 1) Limpio todo lo pendiente de TX
             esp01Flags.bit.SENDINGDATA   = 0;
             esp01Flags.bit.TXCIPSEND      = 0;
@@ -869,15 +870,15 @@ void onESP01StateChange(_eESP01STATUS state) {
             break;
 
         case ESP01_UDPTCP_CONNECTED:
-            //ESP01_USB_DbgStr("\r\n+++ UDP Established +++\r\n");
+            ESP01_USB_DbgStr("\r\n+++ UDP Established +++\r\n");
+            //UNER_SendAlive();
             if (!ESP01_IsSending()) {
-                const char msg[] = "ALIVE\r\n";
-                //ESP01_USB_DbgStr("\r\n>>> Ping inicial <<<\r\n");
-                ESP01_Send((uint8_t*)msg, 0, sizeof(msg)-1, sizeof(msg)-1);
-            }
+            	const char test[] = "HELLO";
+            	ESP01_Send((uint8_t*)test, 0, sizeof(test)-1, sizeof(test)-1);
+			}
             break;
         case ESP01_SEND_OK:
-            //ESP01_USB_DbgStr("\r\n>>> ESP01: Data Sent OK <<<\r\n");
+            ESP01_USB_DbgStr("\r\n>>> ESP01: Data Sent OK <<<\r\n");
             break;
         default:
             break;
