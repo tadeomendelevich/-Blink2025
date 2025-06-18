@@ -37,7 +37,7 @@ extern uint8_t usb_enqueue_tx(const uint8_t *data, uint16_t len);
 static int16_t *p_ax = NULL, *p_ay = NULL, *p_az = NULL;
 static int16_t *p_gx = NULL, *p_gy = NULL, *p_gz = NULL;
 
-static uint8_t sendAllSensorsFlag = 0;
+volatile uint8_t sendAllSensorsFlag = 0;
 
 static uint16_t *p_adcBuf = NULL;	// // Punteros a las variables de adc en main.c
 static uint8_t   adcBufLen = 0;
@@ -317,7 +317,7 @@ void decodeCommand(_sRx *dataRx, _sTx *dataTx)
 		break;
         case SENDALLSENSORS:
         	sendAllSensorsFlag = !sendAllSensorsFlag;	// Si esta activa desactivo, y sino, activo
-
+        	USB_Debug("CMD SENDALLSENSORS recibido. flag=%d\r\n", sendAllSensorsFlag);
         	putHeaderOnTx(dataTx, SENDALLSENSORS, 29);
 
         	myWord.ui16[0] =  (int16_t)p_adcBuf[0]; 		// ADC 1

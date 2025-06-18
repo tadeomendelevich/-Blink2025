@@ -45,11 +45,6 @@ uint8_t mpu_gyro_ready  = 0;
 // Variables RAW leídas directamente del sensor (int16_t = complemento a dos)
 int32_t ax, ay, az, gx, gy, gz;
 
-uint8_t MPU6050_WhoAmI(void) {
-    uint8_t who = 0;
-    _platform->readReg(_platform->ctx, MPU6050_ADDR, WHO_AM_I_REG, &who, 1);
-    return who;
-}
 
 int MPU6050_Init(void)
 {

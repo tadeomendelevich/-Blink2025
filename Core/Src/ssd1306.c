@@ -244,28 +244,17 @@ uint8_t SSD1306_Init(void) {
 }
 
 void SSD1306_UpdateScreen_Blocking(void) {
-    uint8_t buf[1 + SSD1306_WIDTH];
-
-    USB_Debug("SSD1306: arrancando refresco blocking\n");
-
     for (uint8_t m = 0; m < 8; m++) {
-        USB_Debug("  página %u, cmd=0x%02X\n", m, 0xB0 + m);
+        WRITE_CMD(0xB0 + m);  // seleccionar página m
+        WRITE_CMD(0x00);      // columna baja = 0
+        WRITE_CMD(0x10);      // columna alta = 0
 
-        WRITE_CMD(0xB0 + m);
-        WRITE_CMD(0x00);
-        WRITE_CMD(0x10);
-
-        buf[0] = 0x40;
-        memcpy(&buf[1],
-               &SSD1306_Buffer[SSD1306_WIDTH * m],
-               SSD1306_WIDTH);
-
-        USB_Debug("  enviando %u bytes de datos desde %p\n", sizeof(buf), buf+1);
-
-        WRITE_DATA(buf, sizeof(buf));
+        WRITE_DATA(&SSD1306_Buffer[SSD1306_WIDTH * m],
+                   SSD1306_WIDTH);
     }
-    USB_Debug("SSD1306: refresco blocking COMPLETADO\n");
 }
+
+
 
 void SSD1306_UpdateScreen(void) {
     static uint8_t page    = 0;

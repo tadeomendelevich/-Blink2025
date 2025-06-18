@@ -102,17 +102,18 @@ static uint16_t esp01IwRx = 0;
 
 static uint16_t esp01IrRx = 0;		/* Índice de lectura para el buffer UDP entrante */
 
-
 uint8_t  espUSBBuf[ESP_USB_BUF_SIZE];
 volatile uint16_t espUSBBufIw, espUSBBufIr;
 
-static uint8_t sendModulesCunter, aliveCounter, mpu6050Counter;
+static uint8_t sendModulesCounter, aliveCounter, mpu6050Counter;
 
 int x = 1;
 
 uint8_t i2c1_tx_busy = 0;
 
 uint8_t mpuDataReady = 0;
+
+uint8_t mpu_initialized = 0;
 
 static const char HEX_DIGITS[] = "0123456789ABCDEF";	// Tabla de dígitos hex
 
@@ -166,7 +167,6 @@ static int  uart_send_byte(uint8_t byte);
 static void esp01_chpd(uint8_t val);
 void ESP01_USB_DbgStr(const char *dbgStr);
 void USB_BufferPush(uint8_t b);
-
 
 int  mpu_writeReg(void   *ctx, uint8_t devAddr, uint8_t regAddr, uint8_t *data, uint16_t length);
 int  mpu_readReg(void   *ctx, uint8_t devAddr, uint8_t regAddr, uint8_t *data, uint16_t length);
@@ -254,29 +254,70 @@ int mpu_readReg(void *ctx, uint8_t devAddr, uint8_t regAddr, uint8_t *data, uint
     return 0;
 }
 
-int mpu_readRegDMA(void *ctx, uint8_t devAddr, uint8_t regAddr, uint8_t *data, uint16_t len)
+int mpu_readRegDMA(void *ctx,
+                   uint8_t devAddr,
+                   uint8_t regAddr,
+                   uint8_t *data,
+                   uint16_t len)
 {
-    HAL_StatusTypeDef st = HAL_I2C_Mem_Read_DMA((I2C_HandleTypeDef*)ctx, devAddr, regAddr,
-    					I2C_MEMADD_SIZE_8BIT, data, len);
+    // 1) Si el bus está ocupado, devolvemos error
+    if (i2c1_tx_busy) {
+        mpu_errorCb(ctx, HAL_BUSY);
+        return -1;
+    }
+
+    // 2) Tomamos el candado
+    i2c1_tx_busy = 1;
+
+    // 3) Lanzamos la lectura DMA
+    HAL_StatusTypeDef st = HAL_I2C_Mem_Read_DMA(
+        (I2C_HandleTypeDef*)ctx,
+        devAddr,
+        regAddr,
+        I2C_MEMADD_SIZE_8BIT,
+        data,
+        len
+    );
+
+    // 4) Si falla al arrancar, liberamos candado y notificamos
     if (st != HAL_OK) {
-        mpuPlat.onError(mpuPlat.ctx, st);
+        i2c1_tx_busy = 0;
+        mpu_errorCb(ctx, st);
         return -1;
     }
     return 0;
 }
 
+
 void mpu_delayMs(void *ctx, uint32_t ms) {
     HAL_Delay(ms);
 }
 
-void mpu_errorCb(void *ctx, int err) {	// En caso de que exista un error, lo comunico por USB
-    USB_Debug("ERROR MPU6050: 0x%02X\r\n", err);
+void mpu_errorCb(void *ctx, int err) {
+    static uint8_t error_printed = 0;
+    if (!error_printed) {
+        error_printed = 1;
+        mpu_initialized = 0;  // impide futuras lecturas DMA
+        USB_Debug("ERROR MPU6050: 0x%02X\r\n", err);
+    }
 }
 
+
 void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c) {
-    if (hi2c->Instance != I2C1) return;
-    MPU6050_ProcessDMA();
+    if (hi2c->Instance == I2C1) {
+        // 1) liberamos el bus
+        i2c1_tx_busy = 0;
+        // 2) procesamos datos MPU
+        MPU6050_ProcessDMA();
+    }
 }
+
+void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c) {
+    if (hi2c->Instance == I2C1) {
+        i2c1_tx_busy = 0;
+    }
+}
+
 
 void USB_BufferPush(uint8_t b){
     espUSBBuf[espUSBBufIw++] = b;
@@ -496,7 +537,7 @@ void MotorControl(int16_t setMotorRight, int16_t setMotorLeft) {
 }
 
 void my_ssd1306_init(void *ctx) {
-    MX_I2C1_Init();
+    //MX_I2C1_Init();
 }
 
 // Callback comando
@@ -512,28 +553,41 @@ int my_ssd1306_write_cmd(void *ctx, uint8_t cmd) {
 
 
 // Callback datos bloqueante
+// Sustituye toda la función por esta versión sin array local
 int my_ssd1306_write_data(void *ctx, const uint8_t *data, uint16_t len) {
-    // Desempaquetar el contexto
     SSD1306_Ctx_t *c = (SSD1306_Ctx_t*)ctx;
-    // Preparo buffer con control byte + datos
-    uint8_t buf[1 + SSD1306_WIDTH];
-    buf[0] = 0x40;
-    memcpy(&buf[1], data, len);
-    // Transmisión bloqueante
-    HAL_StatusTypeDef st = HAL_I2C_Master_Transmit(
+    HAL_StatusTypeDef st;
+    uint8_t control = 0x40;
+
+    // 1) mando sólo el control byte
+    st = HAL_I2C_Master_Transmit(
         c->hi2c,
         SSD1306_I2C_ADDR,
-        buf,
-        len + 1,
+        &control,
+        1,
         HAL_MAX_DELAY
     );
     if (st != HAL_OK) {
-        // Notifico el fallo (p.ej. por USB y LED)
         SSD1306_plat.onError(ctx, (int)st);
         return -1;
     }
+
+    // 2) mando los datos del buffer
+    st = HAL_I2C_Master_Transmit(
+        c->hi2c,
+        SSD1306_I2C_ADDR,
+        (uint8_t*)data,
+        len,
+        HAL_MAX_DELAY
+    );
+    if (st != HAL_OK) {
+        SSD1306_plat.onError(ctx, (int)st);
+        return -1;
+    }
+
     return 0;
 }
+
 
 // Callback datos no bloqueante (DMA)
 int my_ssd1306_write_data_async(void *ctx, const uint8_t *data, uint16_t len) {
@@ -570,7 +624,7 @@ uint8_t my_ssd1306_is_busy(void *ctx) {
 }
 
 void my_ssd1306_errorCb(void *ctx, int err) {
-    USB_Debug("ERROR SSD1306: 0x%02X\r\n", err);
+	USB_Debug("ERROR SSD1306: %X\r\n", err);
     i2c1_tx_busy = 0;
 	SSD1306_ResetUpdateState();
 }
@@ -661,8 +715,6 @@ int main(void)
   CDC_Attach_Rx(USBRxData);
   nBytesTx = 0;
 
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValues, 8);
-
   HAL_TIM_Base_Start_IT(&htim1);
   HAL_TIM_Base_Start_IT(&htim3);
 
@@ -697,12 +749,29 @@ int main(void)
   UNER_RegisterADCBuffer(adcValues, 8);  // array adcValues[8]
   UNER_RegisterMotorSpeed(&motorRightVelocity, &motorLeftVelocity);
 
+  HAL_Delay(500);
+  SSD1306_RegisterPlatform(&SSD1306_plat);
+  SSD1306_Init();
+
+  SSD1306_GotoXY(30, 5);
+  SSD1306_Puts("TADEO",   &Font_7x10, SSD1306_COLOR_WHITE);
+  SSD1306_GotoXY(5, 35);
+  SSD1306_Puts("MENDELEVICH",&Font_7x10, SSD1306_COLOR_WHITE);
+
+  SSD1306_UpdateScreen_Blocking();
+  HAL_Delay(2000);
+  SSD1306_Fill(SSD1306_COLOR_BLACK);
+  SSD1306_UpdateScreen_Blocking();
+
   MPU6050_RegisterPlatform(&mpuPlat);
   int status = MPU6050_Init();
   if (status != MPU6050_OK) {
+	  mpu_initialized = 0;
       USB_Debug("ERROR MPU6050: NO SE HA PODIDO INICIALIZAR EL MODULO MPU6050\r\n");
+  } else {
+	  mpu_initialized = 1;
+	  MPU6050_StartRead_Accel_DMA();  // arranca la primera lectura
   }
-  MPU6050_StartRead_Accel_DMA();
 
   tmo100ms = 10;
   is250us = 0;
@@ -714,19 +783,7 @@ int main(void)
   motorRightVelocity = 20;  // 50% adelante
   motorLeftVelocity  = 20;  // 50% adelante
 
-  HAL_Delay(500);
-  SSD1306_RegisterPlatform(&SSD1306_plat);
-  SSD1306_Init();
-
-  SSD1306_GotoXY(35, 5);
-  SSD1306_Puts("TADEO",   &Font_11x18, SSD1306_COLOR_WHITE);
-  SSD1306_GotoXY(5, 35);
-  SSD1306_Puts("MENDELEVICH",&Font_11x18, SSD1306_COLOR_WHITE);
-
-  SSD1306_UpdateScreen_Blocking();
-  HAL_Delay(1000);
-  SSD1306_Fill(SSD1306_COLOR_BLACK);
-  SSD1306_UpdateScreen_Blocking();
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValues, 8);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -766,16 +823,18 @@ int main(void)
 				  UNER_SendAlive();
 		  }
 
-		  sendModulesCunter++;
-		  if (sendModulesCunter >= 20) {
-			  sendModulesCunter = 0;
+		  sendModulesCounter++;
+		  if (sendModulesCounter >= 40) {
+			  sendModulesCounter = 0;
+			  //USB_Debug(">>> Tick SENDALLSENSORS: flag=%d\r\n", UNER_ShouldSendAllSensors());
 			  if (UNER_ShouldSendAllSensors()) {
+				  USB_Debug(">>> Llamando a UNER_SendAllSensors()\r\n");
 				  UNER_SendAllSensors();
 			  }
 		  }
 
 		  mpu6050Counter++;
-		  if (mpu6050Counter >= 2) {
+		  if (mpu6050Counter >= 2 && mpu_initialized) {
 			mpu6050Counter = 0;
 			if (!i2c1_tx_busy) {
 			  MPU6050_StartRead_Accel_DMA();   // Lanzo la lectura de aceleracion y luego se lanza sola la de giroscopio dentro de su funcion
