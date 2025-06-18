@@ -96,6 +96,7 @@ typedef enum{
     GETSPEED = 0xA4,
 	GETADCVALUES = 0xA5,
 	GETMPU6050VALUES = 0xA6,
+	GETANGLE = 0XA7,
     RADAR = 0xA8,
 	SENDALLSENSORS = 0xA9,
     ACK = 0x0D,
@@ -137,5 +138,8 @@ void UNER_RegisterADCBuffer(uint16_t *buf, uint8_t len);
 
 /**< Registra dónde escribir la velocidad de los motores */
 void UNER_RegisterMotorSpeed(int16_t *rightPtr, int16_t *leftPtr);
+
+void UNER_RegisterAngle(int16_t *rollPtr, int16_t *pitchPtr);
+
 
 #endif /* ESP01_H_ */

@@ -45,7 +45,7 @@
 #define USB_TX_BUF_SIZE 	256
 #define USB_TX_BUF_MASK 	(USB_TX_BUF_SIZE-1)
 
-#define MPU_AVERAGE_SIZE 			40
+#define MPU_AVERAGE_SIZE 			10
 #define ADC_AVERAGE_SIZE 			40
 
 #define BAR_COUNT    		8
@@ -53,6 +53,7 @@
 #define SCREEN_W     		SSD1306_WIDTH
 #define SCREEN_H    		SSD1306_HEIGHT
 
+#define CORDIC_K  			2478
 
 
 /* USER CODE END PD */
@@ -94,8 +95,6 @@ static _sRx    unerRx;
 char usbBuffer[128];
 
 uint16_t adcValues[8];
-uint8_t flag_adc = 0;
-uint8_t adcCounter = 0;
 
 static uint8_t esp01RxBuf[ESP01RXBUFAT];
 static uint16_t esp01IwRx = 0;
@@ -148,6 +147,13 @@ static uint8_t maIndex = 0;		// Índice circular común para todos los canales
 // Valores promediados que luego usaremos para dibujar
 static uint16_t adcAvg[BAR_COUNT] = {0};
 
+static int16_t roll_deg = 0;	// eje x
+static int16_t pitch_deg = 0;	// eje y
+
+/// Ángulos de reducción de CORDIC en grados * 2^8 (escala Q8)
+static const int16_t cordic_phase[16] = {
+    128, 76, 40, 20, 10, 5, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0
+};
 
 /* USER CODE END PV */
 
@@ -199,6 +205,9 @@ void my_ssd1306_delay_ms(void *ctx, uint32_t ms);
 void updateDisplay(void);
 void UpdateADC_MovingAverage(void);
 
+uint16_t isqrt_uint32(uint32_t v);
+void calculate_tilt(int16_t ax, int16_t ay, int16_t az, int16_t *out_roll_deg, int16_t *out_pitch_deg);
+int16_t cordic_atan2_deg(int32_t y, int32_t x);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -327,16 +336,13 @@ void USBRxData(uint8_t *buf, int len) {
 }
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
-	if(htim->Instance == TIM1){		// 250us
-		is250us = 1;
-		adcCounter++;
-	}
-
-	if (htim->Instance == TIM3) {	// 10ms
-		is10ms = 1;
-	}
+    if (htim->Instance == TIM1) {        // 10 ms
+        is10ms = 1;
+    }
+    if (htim->Instance == TIM3) {        // 250 µs
+        is250us = 1;
+    }
 }
-
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART1) {
         ESP01_WriteRX(dataRx);      // Sube byte al buffer AT
@@ -630,6 +636,18 @@ void UpdateADC_MovingAverage(void) {
     maIndex = (maIndex + 1) % ADC_AVERAGE_SIZE;	    // Avanza en el buffer circular
 }
 
+// Entero sqrt aproximado (Newton)
+// Devuelve floor(sqrt(v))
+uint16_t isqrt_uint32(uint32_t v) {
+    uint32_t x = v;
+    uint32_t y = (x + 1) >> 1;
+    while (y < x) {
+        x = y;
+        y = (v/x + x) >> 1;
+    }
+    return (uint16_t)x;
+}
+
 void updateDisplay(void) {
     // 1) Limpia todo el buffer
     SSD1306_Fill(SSD1306_COLOR_BLACK);
@@ -713,8 +731,53 @@ void updateDisplay(void) {
     SSD1306_RequestUpdate();
 }
 
+/// Devuelve atan2(y,x) en grados, enteros
+int16_t cordic_atan2_deg(int32_t y, int32_t x) {
+    int32_t xc = x, yc = y;
+    int16_t angle = 0;
 
+    // Llevamos el vector dentro del cuadrante primero
+    if (xc < 0) {
+        xc = -xc;
+        yc = -yc;
+        angle = 180;
+    }
 
+    // Normalizamos por K (opcional si tu hardware lo acelera)
+    xc = (xc * CORDIC_K) >> 12;
+    yc = (yc * CORDIC_K) >> 12;
+
+    // 16 iteraciones bastan para ~1°
+    for (int i = 0; i < 16; i++) {
+        int32_t x_shift = xc >> i;
+        int32_t y_shift = yc >> i;
+        if (yc > 0) {
+            xc += y_shift;
+            yc -= x_shift;
+            angle += cordic_phase[i];
+        } else {
+            xc -= y_shift;
+            yc += x_shift;
+            angle -= cordic_phase[i];
+        }
+    }
+
+    return angle;
+}
+
+/// Tu calculate_tilt usando cordic_atan2_deg:
+void calculate_tilt(int16_t ax, int16_t ay, int16_t az,
+                    int16_t *out_roll_deg, int16_t *out_pitch_deg)
+{
+    // roll = atan2( ay, az )
+    *out_roll_deg  = cordic_atan2_deg( ay, az );
+
+    // pitch = atan2( -ax, sqrt( ay² + az² ) )
+    uint32_t mag2 = (uint32_t)ay*(uint32_t)ay + (uint32_t)az*(uint32_t)az;
+    // Para la raíz puedes usar una isqrt aproximada:
+    int32_t denom = isqrt_uint32(mag2);
+    *out_pitch_deg = cordic_atan2_deg( -ax, denom );
+}
 
 /* USER CODE END 0 */
 
@@ -795,6 +858,7 @@ int main(void)
   UNER_Init(&unerRx, &unerTx, &ax, &ay, &az, &gx, &gy, &gz);
   UNER_RegisterADCBuffer(adcAvg, 8);  // array adcValues[8]
   UNER_RegisterMotorSpeed(&motorRightVelocity, &motorLeftVelocity);
+  UNER_RegisterAngle(&roll_deg, &pitch_deg);
 
   //HAL_Delay(100);
   SSD1306_RegisterPlatform(&SSD1306_plat);
@@ -825,8 +889,6 @@ int main(void)
   motorLeftVelocity  = 0;
 
   HAL_Delay(2000);
-  SSD1306_Fill(SSD1306_COLOR_BLACK);
-  SSD1306_UpdateScreen_Blocking();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -836,17 +898,12 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  if (is250us) {
-	      is250us = 0;
-	      HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValues, 8);
-	  }
-
 	  if(is10ms) {
 		  is10ms = 0;
 
-		  ESP01_Timeout10ms();  // Requerido por la librería ESP01
-		  ESP01_Task(); // Procesa tramas ESP01 recibidas
-		  UNER_Task(); // Procesa tramas UNER recibidas
+		  ESP01_Timeout10ms();  	// Requerido por la librería ESP01
+		  ESP01_Task(); 	// Procesa tramas ESP01 recibidas
+		  UNER_Task(); 		// Procesa tramas UNER recibidas
 
 		  if (unerTx.indexR != unerTx.indexW) {
 		      UNER_SendSerial(&unerTx);
@@ -867,7 +924,7 @@ int main(void)
 		  }
 
 		  sendModulesCounter++;
-		  if (sendModulesCounter >= 40) {
+		  if (sendModulesCounter >= 20) {
 			  sendModulesCounter = 0;
 			  if (UNER_ShouldSendAllSensors()) {
 				  UNER_SendAllSensors();
@@ -920,6 +977,8 @@ int main(void)
 			  gx = (int16_t)gx_ema;
 			  gy = (int16_t)gy_ema;
 			  gz = (int16_t)gz_ema;
+
+			  calculate_tilt(ax, ay, az, &roll_deg, &pitch_deg);
 		  }
 
 		  MotorControl(motorRightVelocity, motorLeftVelocity);
@@ -1037,7 +1096,7 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
   hadc1.Init.ContinuousConvMode = DISABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
-  hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIGCONV_T1_CC1;
+  hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIGCONV_T3_TRGO;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc1.Init.NbrOfConversion = 8;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
@@ -1049,7 +1108,7 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_0;
   sConfig.Rank = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
+  sConfig.SamplingTime = ADC_SAMPLETIME_7CYCLES_5;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -1176,9 +1235,9 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
-  htim1.Init.Prescaler = 71;
+  htim1.Init.Prescaler = 7199;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 249;
+  htim1.Init.Period = 99;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -1293,9 +1352,9 @@ static void MX_TIM3_Init(void)
 
   /* USER CODE END TIM3_Init 1 */
   htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 7199;
+  htim3.Init.Prescaler = 71;
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 99;
+  htim3.Init.Period = 249;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
@@ -1307,7 +1366,7 @@ static void MX_TIM3_Init(void)
   {
     Error_Handler();
   }
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
   {
