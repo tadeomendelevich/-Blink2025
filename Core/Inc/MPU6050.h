@@ -144,5 +144,6 @@ void MPU6050_GetGyro(int16_t *gx, int16_t *gy, int16_t *gz);
 // Registrar la plataforma antes de llamar a Init o StartRead
 void MPU6050_RegisterPlatform(MPU6050_Platform_t *plat);
 
+void MPU6050_Calibrate(void);
 
 #endif /* MPU6050_H_ */

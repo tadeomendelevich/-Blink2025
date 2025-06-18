@@ -260,16 +260,13 @@ int mpu_readRegDMA(void *ctx,
                    uint8_t *data,
                    uint16_t len)
 {
-    // 1) Si el bus está ocupado, devolvemos error
+    // Si el bus está ocupado, salimos
     if (i2c1_tx_busy) {
-        mpu_errorCb(ctx, HAL_BUSY);
         return -1;
     }
-
-    // 2) Tomamos el candado
+    // Tomamos el bus
     i2c1_tx_busy = 1;
 
-    // 3) Lanzamos la lectura DMA
     HAL_StatusTypeDef st = HAL_I2C_Mem_Read_DMA(
         (I2C_HandleTypeDef*)ctx,
         devAddr,
@@ -278,11 +275,10 @@ int mpu_readRegDMA(void *ctx,
         data,
         len
     );
-
-    // 4) Si falla al arrancar, liberamos candado y notificamos
     if (st != HAL_OK) {
+        // Si no arranca, liberamos y notificamos
         i2c1_tx_busy = 0;
-        mpu_errorCb(ctx, st);
+        mpuPlat.onError(mpuPlat.ctx, st);
         return -1;
     }
     return 0;
@@ -302,14 +298,12 @@ void mpu_errorCb(void *ctx, int err) {
     }
 }
 
-
 void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c) {
-    if (hi2c->Instance == I2C1) {
-        // 1) liberamos el bus
-        i2c1_tx_busy = 0;
-        // 2) procesamos datos MPU
-        MPU6050_ProcessDMA();
-    }
+    if (hi2c->Instance != I2C1) return;
+    // 1) liberamos el bus I2C
+    i2c1_tx_busy = 0;
+    // 2) ahora procesamos datos bruto → físico
+    MPU6050_ProcessDMA();
 }
 
 void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c) {
@@ -317,7 +311,6 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c) {
         i2c1_tx_busy = 0;
     }
 }
-
 
 void USB_BufferPush(uint8_t b){
     espUSBBuf[espUSBBufIw++] = b;
@@ -553,41 +546,28 @@ int my_ssd1306_write_cmd(void *ctx, uint8_t cmd) {
 
 
 // Callback datos bloqueante
-// Sustituye toda la función por esta versión sin array local
 int my_ssd1306_write_data(void *ctx, const uint8_t *data, uint16_t len) {
+    // Desempaquetar el contexto
     SSD1306_Ctx_t *c = (SSD1306_Ctx_t*)ctx;
-    HAL_StatusTypeDef st;
-    uint8_t control = 0x40;
-
-    // 1) mando sólo el control byte
-    st = HAL_I2C_Master_Transmit(
+    // Preparo buffer con control byte + datos
+    uint8_t buf[1 + SSD1306_WIDTH];
+    buf[0] = 0x40;
+    memcpy(&buf[1], data, len);
+    // Transmisión bloqueante
+    HAL_StatusTypeDef st = HAL_I2C_Master_Transmit(
         c->hi2c,
         SSD1306_I2C_ADDR,
-        &control,
-        1,
+        buf,
+        len + 1,
         HAL_MAX_DELAY
     );
     if (st != HAL_OK) {
+        // Notifico el fallo (p.ej. por USB y LED)
         SSD1306_plat.onError(ctx, (int)st);
         return -1;
     }
-
-    // 2) mando los datos del buffer
-    st = HAL_I2C_Master_Transmit(
-        c->hi2c,
-        SSD1306_I2C_ADDR,
-        (uint8_t*)data,
-        len,
-        HAL_MAX_DELAY
-    );
-    if (st != HAL_OK) {
-        SSD1306_plat.onError(ctx, (int)st);
-        return -1;
-    }
-
     return 0;
 }
-
 
 // Callback datos no bloqueante (DMA)
 int my_ssd1306_write_data_async(void *ctx, const uint8_t *data, uint16_t len) {
@@ -624,7 +604,9 @@ uint8_t my_ssd1306_is_busy(void *ctx) {
 }
 
 void my_ssd1306_errorCb(void *ctx, int err) {
-	USB_Debug("ERROR SSD1306: %X\r\n", err);
+	USB_Debug("ERROR SSD1306: 0x");
+	USB_DebugHex(err);
+	USB_Debug("\r\n");
     i2c1_tx_busy = 0;
 	SSD1306_ResetUpdateState();
 }
@@ -635,22 +617,47 @@ void my_ssd1306_delay_ms(void *ctx, uint32_t ms) {
 }
 
 void DrawADC_Bars(void) {
-	SSD1306_Fill(SSD1306_COLOR_BLACK); 	// 1. Limpia todo el buffer
+    // 1) Limpia todo el buffer
+    SSD1306_Fill(SSD1306_COLOR_BLACK);
 
-	const uint16_t bar_width = (SCREEN_W - (BAR_COUNT + 1)*BAR_SPACING) / BAR_COUNT;	// 2. Calcula ancho fijo de cada barra
+    // 2) Define la “región” de barras: mitad derecha, mitad inferior
+    const uint16_t region_x      = SCREEN_W / 2;
+    const uint16_t region_y      = SCREEN_H / 2;
+    const uint16_t region_w      = SCREEN_W / 2;
+    const uint16_t region_h      = SCREEN_H / 2;
 
-	// 3. Recorre cada canal ADC
-	for (uint8_t i = 0; i < BAR_COUNT; i++) {
-		uint16_t v = adcAvg[i] > 4000 ? 4000 : adcAvg[i];	// a) limitar valor a 0..4000
-		uint16_t h = v * SCREEN_H / 4000;		// b) convertir a altura en píxeles
-		uint16_t x0 = BAR_SPACING + i * (bar_width + BAR_SPACING);		// c) calcular posición X
-		uint16_t y0 = SCREEN_H - h;		// d) la barra “crece” desde la base
+    // 3) Calcula ancho y espaciado de barras dentro de esa región
+    const uint16_t bar_width     = (region_w - (BAR_COUNT + 1)*BAR_SPACING) / BAR_COUNT;
+    const uint16_t bar_spacing   = BAR_SPACING;
 
-		SSD1306_DrawFilledRectangle(x0, y0, bar_width, h, SSD1306_COLOR_WHITE);		// e) dibuja el rectángulo relleno
+    // 4) Para cada canal, dibuja barra y etiqueta
+    for (uint8_t i = 0; i < BAR_COUNT; i++) {
+        // a) Valor limitado 0…4000
+        uint16_t v = (adcAvg[i] > 4000 ? 4000 : adcAvg[i]);
+        // b) Altura proporcional dentro de region_h
+        uint16_t h = (uint32_t)v * region_h / 4000;
+        // c) Posición X dentro de la mitad derecha
+        uint16_t x0 = region_x + bar_spacing + i * (bar_width + bar_spacing);
+        // d) Posición Y para que crezca desde la base de la región
+        uint16_t y0 = region_y + (region_h - h);
 
-	}
-    SSD1306_RequestUpdate();  // refresco no bloqueante
+        // e) Dibuja la barra rellena
+        SSD1306_DrawFilledRectangle(x0, y0, bar_width, h, SSD1306_COLOR_WHITE);
+
+        // f) Número de ADC centrado bajo la barra
+        char lbl[3];
+        sprintf(lbl, "%u", i+1);
+        // ancho aproximado de un carácter 6px, centramos:
+        uint16_t text_x = x0 + (bar_width/2) - 3;
+        uint16_t text_y = region_y + region_h + 1; // justo debajo de la región
+        SSD1306_GotoXY(text_x, text_y);
+        SSD1306_Puts(lbl, &Font_7x10, SSD1306_COLOR_WHITE);
+    }
+
+    // 5) Solicita refresco no bloqueante
+    SSD1306_RequestUpdate();
 }
+
 
 void UpdateADC_MovingAverage(void) {
     for (uint8_t ch = 0; ch < BAR_COUNT; ++ch) {
@@ -715,6 +722,8 @@ int main(void)
   CDC_Attach_Rx(USBRxData);
   nBytesTx = 0;
 
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValues, 8);
+
   HAL_TIM_Base_Start_IT(&htim1);
   HAL_TIM_Base_Start_IT(&htim3);
 
@@ -746,8 +755,29 @@ int main(void)
   unerTx.buff = unerTxBuffer;
   unerTx.mask = TXBUFSIZE - 1;
   UNER_Init(&unerRx, &unerTx, &ax, &ay, &az, &gx, &gy, &gz);
-  UNER_RegisterADCBuffer(adcValues, 8);  // array adcValues[8]
+  UNER_RegisterADCBuffer(adcAvg, 8);  // array adcValues[8]
   UNER_RegisterMotorSpeed(&motorRightVelocity, &motorLeftVelocity);
+
+  MPU6050_RegisterPlatform(&mpuPlat);
+  int status = MPU6050_Init();
+  if (status != MPU6050_OK) {
+	  mpu_initialized = 0;
+      USB_Debug("ERROR MPU6050: NO SE HA PODIDO INICIALIZAR EL MODULO MPU6050\r\n");
+  } else {
+	   mpu_initialized = 1;
+	   MPU6050_Calibrate();		// Calibración
+	   MPU6050_StartRead_Accel_DMA();	// Lanzo priemra lectura
+  }
+
+  tmo100ms = 10;
+  is250us = 0;
+  is10ms = 0;
+  mpu6050Counter = 0;
+  aliveCounter = 0;
+  sendAllSensors = 0;
+
+  motorRightVelocity = 0;
+  motorLeftVelocity  = 0;
 
   HAL_Delay(500);
   SSD1306_RegisterPlatform(&SSD1306_plat);
@@ -762,28 +792,6 @@ int main(void)
   HAL_Delay(2000);
   SSD1306_Fill(SSD1306_COLOR_BLACK);
   SSD1306_UpdateScreen_Blocking();
-
-  MPU6050_RegisterPlatform(&mpuPlat);
-  int status = MPU6050_Init();
-  if (status != MPU6050_OK) {
-	  mpu_initialized = 0;
-      USB_Debug("ERROR MPU6050: NO SE HA PODIDO INICIALIZAR EL MODULO MPU6050\r\n");
-  } else {
-	  mpu_initialized = 1;
-	  MPU6050_StartRead_Accel_DMA();  // arranca la primera lectura
-  }
-
-  tmo100ms = 10;
-  is250us = 0;
-  is10ms = 0;
-  mpu6050Counter = 0;
-  aliveCounter = 0;
-  sendAllSensors = 0;
-
-  motorRightVelocity = 20;  // 50% adelante
-  motorLeftVelocity  = 20;  // 50% adelante
-
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcValues, 8);
   /* USER CODE END 2 */
 
   /* Infinite loop */

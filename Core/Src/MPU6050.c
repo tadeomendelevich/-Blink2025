@@ -15,7 +15,7 @@
 #define GYRO_SENS         131     // LSB por °/s
 #define ACCEL_SCALE_C     981     // 9.81 m/s² × 100 (centésimas)
 #define GYRO_SCALE_C      100     // 1.00 °/s × 100
-
+#define CALIB_SAMPLES  	  500
 // Puntero a la implementación de plataforma
 static const MPU6050_Platform_t *_platform = NULL;
 
@@ -45,6 +45,8 @@ uint8_t mpu_gyro_ready  = 0;
 // Variables RAW leídas directamente del sensor (int16_t = complemento a dos)
 int32_t ax, ay, az, gx, gy, gz;
 
+static int32_t bias_ax, bias_ay, bias_az;
+static int32_t bias_gx, bias_gy, bias_gz;
 
 int MPU6050_Init(void)
 {
@@ -120,6 +122,11 @@ void MPU6050_ProcessDMA(void) {
 		int16_t raw_ay = (int16_t)(accel_buf[2] << 8 | accel_buf[3]);
 		int16_t raw_az = (int16_t)(accel_buf[4] << 8 | accel_buf[5]);
 
+		// 1) Compensa bias:
+		raw_ax -= (int16_t)bias_ax;
+		raw_ay -= (int16_t)bias_ay;
+		raw_az -= (int16_t)bias_az;
+
 		// X
 		if (abs(raw_ax) <= OFFSET_AX) {
 			ax_real = 0;
@@ -149,6 +156,12 @@ void MPU6050_ProcessDMA(void) {
 		int16_t raw_gy = (int16_t)(gyro_buf[2] << 8 | gyro_buf[3]);
 		int16_t raw_gz = (int16_t)(gyro_buf[4] << 8 | gyro_buf[5]);
 
+
+		// Compensa bias de giro:
+		raw_gx -= (int16_t)bias_gx;
+		raw_gy -= (int16_t)bias_gy;
+		raw_gz -= (int16_t)bias_gz;
+
 		// X
 		if (abs(raw_gx) <= OFFSET_GX) {
 			gx_real = 0;
@@ -175,8 +188,43 @@ void MPU6050_ProcessDMA(void) {
 	}
 }
 
+void MPU6050_Calibrate(void) {
+    int32_t sum_ax=0, sum_ay=0, sum_az=0;
+    int32_t sum_gx=0, sum_gy=0, sum_gz=0;
+    int16_t raw_ax, raw_ay, raw_az;
+    int16_t raw_gx, raw_gy, raw_gz;
+    uint8_t buf[6];
 
+    for (int i = 0; i < CALIB_SAMPLES; ++i) {
+        // 1) Lee acelerómetro RAW
+        _platform->readReg(_platform->ctx, MPU6050_ADDR, ACCEL_XOUT_H_REG, buf, 6);
+        raw_ax = (int16_t)(buf[0]<<8 | buf[1]);
+        raw_ay = (int16_t)(buf[2]<<8 | buf[3]);
+        raw_az = (int16_t)(buf[4]<<8 | buf[5]);
+        sum_ax += raw_ax;
+        sum_ay += raw_ay;
+        sum_az += raw_az;
 
+        // 2) Lee giroscopio RAW
+        _platform->readReg(_platform->ctx, MPU6050_ADDR, GYRO_XOUT_H_REG, buf, 6);
+        raw_gx = (int16_t)(buf[0]<<8 | buf[1]);
+        raw_gy = (int16_t)(buf[2]<<8 | buf[3]);
+        raw_gz = (int16_t)(buf[4]<<8 | buf[5]);
+        sum_gx += raw_gx;
+        sum_gy += raw_gy;
+        sum_gz += raw_gz;
+
+        _platform->delayMs(_platform->ctx, 5);
+    }
+    // 3) Guarda sesgos promedio (en LSB)
+    bias_ax = sum_ax / CALIB_SAMPLES;
+    bias_ay = sum_ay / CALIB_SAMPLES;
+    // Para Z restamos 1g en LSB:
+    bias_az = sum_az / CALIB_SAMPLES - ACCEL_SENS;
+    bias_gx = sum_gx / CALIB_SAMPLES;
+    bias_gy = sum_gy / CALIB_SAMPLES;
+    bias_gz = sum_gz / CALIB_SAMPLES;
+}
 
 
 
