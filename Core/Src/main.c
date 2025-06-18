@@ -148,6 +148,7 @@ static uint8_t maIndex = 0;		// Índice circular común para todos los canales
 // Valores promediados que luego usaremos para dibujar
 static uint16_t adcAvg[BAR_COUNT] = {0};
 
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -195,8 +196,9 @@ int my_ssd1306_write_data_async(void *ctx, const uint8_t *data, uint16_t len);
 uint8_t my_ssd1306_is_busy(void *ctx);
 void my_ssd1306_errorCb(void *ctx, int err);
 void my_ssd1306_delay_ms(void *ctx, uint32_t ms);
-void DrawADC_Bars(void);
+void updateDisplay(void);
 void UpdateADC_MovingAverage(void);
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -616,49 +618,6 @@ void my_ssd1306_delay_ms(void *ctx, uint32_t ms) {
     HAL_Delay(ms);
 }
 
-void DrawADC_Bars(void) {
-    // 1) Limpia todo el buffer
-    SSD1306_Fill(SSD1306_COLOR_BLACK);
-
-    // 2) Define la “región” de barras: mitad derecha, mitad inferior
-    const uint16_t region_x      = SCREEN_W / 2;
-    const uint16_t region_y      = SCREEN_H / 2;
-    const uint16_t region_w      = SCREEN_W / 2;
-    const uint16_t region_h      = SCREEN_H / 2;
-
-    // 3) Calcula ancho y espaciado de barras dentro de esa región
-    const uint16_t bar_width     = (region_w - (BAR_COUNT + 1)*BAR_SPACING) / BAR_COUNT;
-    const uint16_t bar_spacing   = BAR_SPACING;
-
-    // 4) Para cada canal, dibuja barra y etiqueta
-    for (uint8_t i = 0; i < BAR_COUNT; i++) {
-        // a) Valor limitado 0…4000
-        uint16_t v = (adcAvg[i] > 4000 ? 4000 : adcAvg[i]);
-        // b) Altura proporcional dentro de region_h
-        uint16_t h = (uint32_t)v * region_h / 4000;
-        // c) Posición X dentro de la mitad derecha
-        uint16_t x0 = region_x + bar_spacing + i * (bar_width + bar_spacing);
-        // d) Posición Y para que crezca desde la base de la región
-        uint16_t y0 = region_y + (region_h - h);
-
-        // e) Dibuja la barra rellena
-        SSD1306_DrawFilledRectangle(x0, y0, bar_width, h, SSD1306_COLOR_WHITE);
-
-        // f) Número de ADC centrado bajo la barra
-        char lbl[3];
-        sprintf(lbl, "%u", i+1);
-        // ancho aproximado de un carácter 6px, centramos:
-        uint16_t text_x = x0 + (bar_width/2) - 3;
-        uint16_t text_y = region_y + region_h + 1; // justo debajo de la región
-        SSD1306_GotoXY(text_x, text_y);
-        SSD1306_Puts(lbl, &Font_7x10, SSD1306_COLOR_WHITE);
-    }
-
-    // 5) Solicita refresco no bloqueante
-    SSD1306_RequestUpdate();
-}
-
-
 void UpdateADC_MovingAverage(void) {
     for (uint8_t ch = 0; ch < BAR_COUNT; ++ch) {
         // Resta la muestra más antigua e incluye la nueva
@@ -671,12 +630,91 @@ void UpdateADC_MovingAverage(void) {
     maIndex = (maIndex + 1) % ADC_AVERAGE_SIZE;	    // Avanza en el buffer circular
 }
 
-//void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
-//    if (hadc->Instance == ADC1) {	// Interrupcion de conversion de los ADC listos
-//        flag_adc = 1;
-//        HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin); // Blink LED
-//    }
-//}
+void updateDisplay(void) {
+    // 1) Limpia todo el buffer
+    SSD1306_Fill(SSD1306_COLOR_BLACK);
+
+    // 2) Línea divisoria en medio
+    SSD1306_DrawLine(
+        SCREEN_W/2, 0,
+        SCREEN_W/2, SCREEN_H - 1,
+        SSD1306_COLOR_WHITE
+    );
+
+    // 3) MPU6050 – valores en la mitad izquierda
+    //    Etiquetas con Font_7x10 (7px ancho), números con SSD1306_DrawDigit5x7 (5px ancho)
+    {
+        const char* labels[6] = { "AX:", "AY:", "AZ:", "GX:", "GY:", "GZ:" };
+        int16_t    values[6];
+        // Suponemos que ax…gz ya están actualizados
+        MPU6050_GetAccel(&values[0], &values[1], &values[2]);
+        MPU6050_GetGyro (&values[3], &values[4], &values[5]);
+
+        char buf[7]; // para itoa
+
+        for (int i = 0; i < 6; i++) {
+            // fila i → y = 2 + i*10 (10px de separación por fila)
+            uint16_t y = 2 + i * 10;
+            // etiqueta
+            SSD1306_GotoXY(2, y);
+            SSD1306_Puts(labels[i], &Font_7x10, SSD1306_COLOR_WHITE);
+            // convierte valor a cadena
+            itoa(values[i], buf, 10);
+            // dibuja cada dígito pequeño
+            uint16_t x = 2 + strlen(labels[i]) * Font_7x10.FontWidth;
+            for (char *p = buf; *p; p++) {
+                if (*p == '-') {
+                    // si quieres manejar el signo, puedes dibujar un guión simple
+                    SSD1306_DrawLine(x, y + 3, x + 4, y + 3, SSD1306_COLOR_WHITE);
+                    x += 6;
+                } else {
+                    SSD1306_DrawDigit5x7(*p - '0', x, y);
+                    x += Font_5x7.FontWidth + 1;
+                }
+            }
+        }
+    }
+
+    // 4) Título “VALORES ADC” centrado sobre las barras, con Font_7x10
+    {
+        const char *title   = "VAL ADCs";
+        uint16_t   w        = strlen(title) * Font_7x10.FontWidth;
+        uint16_t   x0       = SCREEN_W/2 + ((SCREEN_W/2 - w)/2);
+        SSD1306_GotoXY(x0, 1);
+        SSD1306_Puts(title, &Font_7x10, SSD1306_COLOR_WHITE);
+    }
+
+    // 5) Barras en la mitad derecha (igual que antes)
+    {
+        const uint16_t title_h   = Font_7x10.FontHeight + 2;
+        const uint16_t region_x  = SCREEN_W/2;
+        const uint16_t region_y  = title_h;
+        const uint16_t region_w  = SCREEN_W/2;
+        const uint16_t region_h  = SCREEN_H - region_y - Font_5x7.FontHeight;
+
+        const uint16_t bar_spacing = BAR_SPACING;
+        const uint16_t bar_width   =
+            (region_w - (BAR_COUNT + 1)*bar_spacing) / BAR_COUNT;
+
+        for (uint8_t i = 0; i < BAR_COUNT; i++) {
+            uint16_t v  = adcAvg[i] > 4000 ? 4000 : adcAvg[i];
+            uint16_t h  = (uint32_t)v * region_h / 4000;
+            uint16_t x0 = region_x + bar_spacing + i*(bar_width + bar_spacing);
+            uint16_t y0 = region_y + (region_h - h);
+            SSD1306_DrawFilledRectangle(x0, y0, bar_width, h, SSD1306_COLOR_WHITE);
+
+            // dígito bajo la barra
+            uint16_t tx = x0 + (bar_width - Font_5x7.FontWidth)/2;
+            uint16_t ty = region_y + region_h + ((Font_5x7.FontHeight + 2 - Font_5x7.FontHeight)/2);
+            SSD1306_DrawDigit5x7(i+1, tx, ty);
+        }
+    }
+
+    SSD1306_RequestUpdate();
+}
+
+
+
 
 /* USER CODE END 0 */
 
@@ -758,6 +796,13 @@ int main(void)
   UNER_RegisterADCBuffer(adcAvg, 8);  // array adcValues[8]
   UNER_RegisterMotorSpeed(&motorRightVelocity, &motorLeftVelocity);
 
+  //HAL_Delay(100);
+  SSD1306_RegisterPlatform(&SSD1306_plat);
+  SSD1306_Init();
+
+  SSD1306_DrawBitmap(0, 0, unerLogo, 128, 64, SSD1306_COLOR_WHITE);
+  SSD1306_UpdateScreen_Blocking();
+
   MPU6050_RegisterPlatform(&mpuPlat);
   int status = MPU6050_Init();
   if (status != MPU6050_OK) {
@@ -779,16 +824,6 @@ int main(void)
   motorRightVelocity = 0;
   motorLeftVelocity  = 0;
 
-  HAL_Delay(500);
-  SSD1306_RegisterPlatform(&SSD1306_plat);
-  SSD1306_Init();
-
-  SSD1306_GotoXY(30, 5);
-  SSD1306_Puts("TADEO",   &Font_7x10, SSD1306_COLOR_WHITE);
-  SSD1306_GotoXY(5, 35);
-  SSD1306_Puts("MENDELEVICH",&Font_7x10, SSD1306_COLOR_WHITE);
-
-  SSD1306_UpdateScreen_Blocking();
   HAL_Delay(2000);
   SSD1306_Fill(SSD1306_COLOR_BLACK);
   SSD1306_UpdateScreen_Blocking();
@@ -834,9 +869,7 @@ int main(void)
 		  sendModulesCounter++;
 		  if (sendModulesCounter >= 40) {
 			  sendModulesCounter = 0;
-			  //USB_Debug(">>> Tick SENDALLSENSORS: flag=%d\r\n", UNER_ShouldSendAllSensors());
 			  if (UNER_ShouldSendAllSensors()) {
-				  USB_Debug(">>> Llamando a UNER_SendAllSensors()\r\n");
 				  UNER_SendAllSensors();
 			  }
 		  }
@@ -893,56 +926,12 @@ int main(void)
 
 		  UpdateADC_MovingAverage();
 
-		  if (SSD1306_IsUpdateDone()) {
-			  DrawADC_Bars();
+		  if (SSD1306_IsUpdateDone()) {	// Actualizar display con valores de adc, mpu y estados
+			  updateDisplay();
 		  }
 	  }
 
 	  usb_service_tx();
-
-	  /*if (mpuDataReady && SSD1306_IsUpdateDone()) {
-		  mpuDataReady = 0;
-
-		  MPU6050_GetAccel(&ax, &ay, &az);
-		  MPU6050_GetGyro(&gx, &gy, &gz);
-
-		  SSD1306_Fill(SSD1306_COLOR_BLACK);
-
-		  SSD1306_GotoXY(0, 0);
-		  SSD1306_Puts("Valores MPU6050:", &Font_7x10, SSD1306_COLOR_WHITE);
-
-		  SSD1306_GotoXY(0, 20);
-		  SSD1306_Puts("AX:", &Font_7x10, SSD1306_COLOR_WHITE);
-		  char num[7];
-		  itoa(ax, num, 10);
-		  SSD1306_Puts(num, &Font_7x10, SSD1306_COLOR_WHITE);
-		  SSD1306_Puts(" AY:", &Font_7x10, SSD1306_COLOR_WHITE);
-		  itoa(ay, num, 10);
-		  SSD1306_Puts(num, &Font_7x10, SSD1306_COLOR_WHITE);
-
-		  // Fila 2: AZ
-		  SSD1306_GotoXY(0, 30);
-		  SSD1306_Puts("AZ:", &Font_7x10, SSD1306_COLOR_WHITE);
-		  itoa(az, num, 10);
-		  SSD1306_Puts(num, &Font_7x10, SSD1306_COLOR_WHITE);
-
-		  // Fila 3: GX, GY
-		  SSD1306_GotoXY(0, 40);
-		  SSD1306_Puts("GX:", &Font_7x10, SSD1306_COLOR_WHITE);
-		  itoa(gx, num, 10);
-		  SSD1306_Puts(num, &Font_7x10, SSD1306_COLOR_WHITE);
-		  SSD1306_Puts(" GY:", &Font_7x10, SSD1306_COLOR_WHITE);
-		  itoa(gy, num, 10);
-		  SSD1306_Puts(num, &Font_7x10, SSD1306_COLOR_WHITE);
-
-		  // Fila 4: GZ
-		  SSD1306_GotoXY(0, 50);
-		  SSD1306_Puts("GZ:", &Font_7x10, SSD1306_COLOR_WHITE);
-		  itoa(gz, num, 10);
-		  SSD1306_Puts(num, &Font_7x10, SSD1306_COLOR_WHITE);
-
-		  SSD1306_RequestUpdate();
-	  }*/
 
 	  SSD1306_UpdateScreen();
 

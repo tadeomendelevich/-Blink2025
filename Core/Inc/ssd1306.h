@@ -144,7 +144,7 @@ void SSD1306_GotoXY(uint16_t x, uint16_t y);
  * @param  color: Color used for drawing. This parameter can be a value of @ref SSD1306_COLOR_t enumeration
  * @retval Character written
  */
-char SSD1306_Putc(char ch, FontDef_t* Font, SSD1306_COLOR_t color);
+char SSD1306_Putc(char ch, const FontDef_t* Font, SSD1306_COLOR_t color);
 
 /**
  * @brief  Puts string to internal RAM
@@ -154,7 +154,7 @@ char SSD1306_Putc(char ch, FontDef_t* Font, SSD1306_COLOR_t color);
  * @param  color: Color used for drawing. This parameter can be a value of @ref SSD1306_COLOR_t enumeration
  * @retval Zero on success or character value when function failed
  */
-char SSD1306_Puts(char* str, FontDef_t* Font, SSD1306_COLOR_t color);
+char SSD1306_Puts(const char* str, const FontDef_t* Font, SSD1306_COLOR_t color);
 
 /**
  * @brief  Draws line on LCD
@@ -343,6 +343,13 @@ void SSD1306_ClearError(void);
 void reportError(int err);
 
 void SSD1306_ResetUpdateState(void);
+
+/**
+ * @brief  Dibuja un dígito (0–9) usando la fuente 5×7
+ * @param  digit: valor del dígito (0–9)
+ * @param  x, y: coordenadas de la esquina superior izquierda
+ */
+void SSD1306_DrawDigit5x7(uint8_t digit, uint16_t x, uint16_t y);
 
 /* C++ detection */
 #ifdef __cplusplus

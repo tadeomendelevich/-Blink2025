@@ -79,6 +79,13 @@ typedef struct {
  */
 extern FontDef_t Font_7x10;
 
+extern const uint8_t Font5x7[];
+/**
+ * @brief  7 x 10 pixels font size structure
+ */
+extern FontDef_t Font_5x7;
+
+extern const uint8_t unerLogo[1024];
 
 /**
  * @defgroup FONTS_Functions

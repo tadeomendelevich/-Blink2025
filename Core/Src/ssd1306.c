@@ -383,7 +383,7 @@ void SSD1306_GotoXY(uint16_t x, uint16_t y) {
 	SSD1306.CurrentY = y;
 }
 
-char SSD1306_Putc(char ch, FontDef_t* Font, SSD1306_COLOR_t color) {
+char SSD1306_Putc(char ch, const FontDef_t* Font, SSD1306_COLOR_t color) {
 	uint32_t i, b, j;
 
 	/* Check available space in LCD */
@@ -414,7 +414,7 @@ char SSD1306_Putc(char ch, FontDef_t* Font, SSD1306_COLOR_t color) {
 	return ch;
 }
 
-char SSD1306_Puts(char* str, FontDef_t* Font, SSD1306_COLOR_t color) {
+char SSD1306_Puts(const char* str, const FontDef_t* Font, SSD1306_COLOR_t color) {
 	/* Write characters */
 	while (*str) {
 		/* Write character by character */
@@ -757,4 +757,18 @@ void SSD1306_ResetUpdateState(void) {
     ssd_update_done    = 1;
     ssd_start_update   = 0;
     ssd_pending_update = 0;
+}
+
+void SSD1306_DrawDigit5x7(uint8_t digit, uint16_t x, uint16_t y) {
+    if (digit > 9) return;
+    // Cada dígito ocupa Font_5x7.FontWidth bytes consecutivos
+    const uint8_t *pat = &Font5x7[digit * Font_5x7.FontWidth];
+    for (uint8_t col = 0; col < Font_5x7.FontWidth; col++) {
+        uint8_t bits = pat[col];
+        for (uint8_t row = 0; row < Font_5x7.FontHeight; row++) {
+            if (bits & (1 << row)) {
+                SSD1306_DrawPixel(x + col, y + row, SSD1306_COLOR_WHITE);
+            }
+        }
+    }
 }

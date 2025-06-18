@@ -317,7 +317,6 @@ void decodeCommand(_sRx *dataRx, _sTx *dataTx)
 		break;
         case SENDALLSENSORS:
         	sendAllSensorsFlag = !sendAllSensorsFlag;	// Si esta activa desactivo, y sino, activo
-        	USB_Debug("CMD SENDALLSENSORS recibido. flag=%d\r\n", sendAllSensorsFlag);
         	putHeaderOnTx(dataTx, SENDALLSENSORS, 29);
 
         	myWord.ui16[0] =  (int16_t)p_adcBuf[0]; 		// ADC 1
