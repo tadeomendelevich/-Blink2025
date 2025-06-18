@@ -340,7 +340,62 @@ void decodeCommand(_sRx *dataRx, _sTx *dataTx)
         case SENDALLSENSORS:
         	sendAllSensorsFlag = !sendAllSensorsFlag;	// Si esta activa desactivo, y sino, activo
 
-        	UNER_SendAllSensors();
+        	putHeaderOnTx(dataTx, SENDALLSENSORS, 33);
+
+			myWord.ui16[0] =  (int16_t)p_adcBuf[0]; 		// ADC 1
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)p_adcBuf[1];			// ADC 2
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)p_adcBuf[2];			// ADC 3
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)p_adcBuf[3];			// ADC 4
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)p_adcBuf[4];			// ADC 5
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)p_adcBuf[5];			// ADC 6
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)p_adcBuf[6];			// ADC 7
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)p_adcBuf[7];			// ADC 8
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+
+			myWord.ui16[0] =  (int16_t)*p_ax; 	// Envio datos de aceleracion
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)*p_ay;
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)*p_az;
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+
+			myWord.ui16[0] =  (int16_t)*p_gx; 	// Envio datos de giroscopio
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)*p_gy;
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)*p_gz;
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+
+			myWord.ui16[0] =  (int16_t)*p_roll; 	// Envio datos de INCLINACION
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+			myWord.ui16[0] =  (int16_t)*p_pitch;
+			putByteOnTx(dataTx, myWord.ui8[0] );
+			putByteOnTx(dataTx, myWord.ui8[1] );
+
+			putByteOnTx(dataTx, unerTx->chk);
+
         	break;
         default:
             putHeaderOnTx(dataTx, (_eCmd)dataRx->buff[dataRx->indexData], 2);

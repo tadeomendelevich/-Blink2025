@@ -45,8 +45,8 @@
 #define USB_TX_BUF_SIZE 	256
 #define USB_TX_BUF_MASK 	(USB_TX_BUF_SIZE-1)
 
-#define MPU_AVERAGE_SIZE 			10
-#define ADC_AVERAGE_SIZE 			40
+#define MPU_AVERAGE_SIZE 	10
+#define ADC_AVERAGE_SIZE 	40
 
 #define BAR_COUNT    		8
 #define BAR_SPACING  		2
@@ -54,6 +54,9 @@
 #define SCREEN_H    		SSD1306_HEIGHT
 
 #define CORDIC_K  			2478
+
+#define ESP_USB_BUF_SIZE	512
+
 
 
 /* USER CODE END PD */
@@ -208,6 +211,8 @@ void UpdateADC_MovingAverage(void);
 uint16_t isqrt_uint32(uint32_t v);
 void calculate_tilt(int16_t ax, int16_t ay, int16_t az, int16_t *out_roll_deg, int16_t *out_pitch_deg);
 int16_t cordic_atan2_deg(int32_t y, int32_t x);
+
+void onESP01StateChange(_eESP01STATUS state);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -778,6 +783,30 @@ void calculate_tilt(int16_t ax, int16_t ay, int16_t az,
     *out_pitch_deg = cordic_atan2_deg( -ax, denom );
 }
 
+void onESP01StateChange(_eESP01STATUS state) {
+    switch (state) {
+        case ESP01_WIFI_NEW_IP:
+        	char *ip = ESP01_GetLocalIP();
+        	if (ip) USB_Debug("IP ESP: %s\r\n", ip);
+            // Ya tenemos IP, abrimos UDP hacia tu PC
+            ESP01_USB_DbgStr(">>> Wi-Fi OK, empezando UDP\r\n");
+            ESP01_StartUDP("192.168.100.5", /*RemotePORT=*/30010, /*LocalPORT=*/30000);
+            break;
+        case ESP01_UDPTCP_CONNECTED:
+            ESP01_USB_DbgStr(">>> UDP conectado OK\r\n");
+            const char test[] = "HELLO";
+            ESP01_Send((uint8_t*)test, 0, sizeof(test)-1, sizeof(test)-1);
+
+            break;
+        case ESP01_UDPTCP_DISCONNECTED:
+            ESP01_USB_DbgStr(">>> UDP desconectado\r\n");
+            break;
+        default:
+            break;
+    }
+}
+
+
 /* USER CODE END 0 */
 
 /**
@@ -903,9 +932,9 @@ int main(void)
 		  ESP01_Task(); 	// Procesa tramas ESP01 recibidas
 		  UNER_Task(); 		// Procesa tramas UNER recibidas
 
-		  //if (unerTx.indexR != unerTx.indexW) {
-		  //    UNER_SendSerial(&unerTx);
-		  //}
+		  if (unerTx.indexR != unerTx.indexW) {
+		      UNER_SendSerial(&unerTx);
+		  }
 
 		  tmo100ms--;
 		  if (tmo100ms == 0) {
@@ -917,20 +946,19 @@ int main(void)
 		  aliveCounter++;
 		  if (aliveCounter >= 200) {
 			  aliveCounter = 0;
-			  if (ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED && !ESP01_IsSending()) {
-				  const char test[] = "HELLO";
-				  ESP01_Send((uint8_t*)test, 0, sizeof(test)-1, sizeof(test)-1);
-			  };
-				  //UNER_SendAlive();
+			  if (ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED
+			      && !ESP01_IsSending()) {
+			      UNER_SendAlive();
+			  }
 		  }
 
-		  sendModulesCounter++;
+		  /*sendModulesCounter++;
 		  if (sendModulesCounter >= 20) {
 			  sendModulesCounter = 0;
 			  if (UNER_ShouldSendAllSensors()) {
 				  UNER_SendAllSensors();
 			  }
-		  }
+		  }*/
 
 		  mpu6050Counter++;
 		  if (mpu6050Counter >= 2 && mpu_initialized) {
@@ -1009,6 +1037,15 @@ int main(void)
 	    if (len) {
 	      USB_Debug(">> Enviando %u bytes por UDP...\r\n", len);
 	      // 2) envía directamente desde el ring-buffer de UNER
+
+	      uint16_t length = (unerTx.indexW + TXBUFSIZE - unerTx.indexR) & unerTx.mask; // Esto calcula la longitud de los datos en el buffer
+	      USB_Debug("Buffer contents: ");
+	      for (int i = 0; i < length; i++) {
+	          USB_DebugHex(unerTx.buff[unerTx.indexR + i]); // Esto imprimirá cada byte
+	      }
+	      USB_Debug("\r\n");
+
+
 	      if (ESP01_Send(unerTx.buff,
 	                     unerTx.indexR,
 	                     len,

@@ -1,7 +1,7 @@
 /**
   ******************************************************************************
   * @file    ESP01.h
-  * @author  Tadeo Mendelevich
+  * @author  Germán E. Hachmann
   * @brief   Header file containing functions prototypes of ESP01 library.
   ******************************************************************************
   * @attention
@@ -55,8 +55,6 @@ typedef void (*ESP01DebugStr)(const char *dbgStr);
 
 #define ESP01RXBUFAT		128
 #define ESP01TXBUFAT		256
-#define ESP_USB_BUF_SIZE 	256
-
 
 
 /**< Inicializa el driver ESP01 UDP */
@@ -67,10 +65,6 @@ typedef struct{
 	uint16_t			    *iwRX;				    /**< Puntero al índice de escritura del buffer de recepción circular */
 	uint16_t			    sizeBufferRX;		  /**< Tamaño en bytes del buffer de recepción*/
 } _sESP01Handle;
-
-extern uint8_t  espUSBBuf[ESP_USB_BUF_SIZE];
-
-extern volatile uint16_t espUSBBufIw, espUSBBufIr;
 
 
 /**
@@ -212,14 +206,8 @@ void ESP01_AttachDebugStr(ESP01DebugStr aDbgStrPtrFun);
 
 int ESP01_IsHDRRST();
 
-void USB_BufferPush(uint8_t b);
+int  ESP01_IsSending(void);
 
 void ESP01_USB_DbgStr(const char *dbgStr);
-
-void onESP01StateChange(_eESP01STATUS state);
-
-void USB_DebugStr(const char *s);
-
-int ESP01_IsSending(void);
 
 #endif /* ESP01_H_ */
