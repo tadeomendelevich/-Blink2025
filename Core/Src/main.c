@@ -121,9 +121,13 @@ static const char HEX_DIGITS[] = "0123456789ABCDEF";	// Tabla de dígitos hex
 
 uint8_t *sendAllSensors;
 
-const char *wifiSSID     = "MEGACABLE FIBRA-2.4G-ckd0";
-const char *wifiPassword = "djg19dlk";
-const char *wifiIp = "192.168.100.5";
+const char *wifiSSID     = "FCAL";
+const char *wifiPassword = "fcalconcordia.06-2019";
+const char *wifiIp = "172.23.205.98";
+
+//const char *wifiSSID     = "MEGACABLE FIBRA-2.4G-ckd0";
+//const char *wifiPassword = "djg19dlk";
+//const char *wifiIp = "192.168.100.5";
 
 //const char *wifiSSID     = "Delco_Mendelevich";
 //const char *wifiPassword = "toyotakia";
@@ -211,8 +215,6 @@ void UpdateADC_MovingAverage(void);
 uint16_t isqrt_uint32(uint32_t v);
 void calculate_tilt(int16_t ax, int16_t ay, int16_t az, int16_t *out_roll_deg, int16_t *out_pitch_deg);
 int16_t cordic_atan2_deg(int32_t y, int32_t x);
-
-void onESP01StateChange(_eESP01STATUS state);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -783,28 +785,7 @@ void calculate_tilt(int16_t ax, int16_t ay, int16_t az,
     *out_pitch_deg = cordic_atan2_deg( -ax, denom );
 }
 
-void onESP01StateChange(_eESP01STATUS state) {
-    switch (state) {
-        case ESP01_WIFI_NEW_IP:
-        	char *ip = ESP01_GetLocalIP();
-        	if (ip) USB_Debug("IP ESP: %s\r\n", ip);
-            // Ya tenemos IP, abrimos UDP hacia tu PC
-            ESP01_USB_DbgStr(">>> Wi-Fi OK, empezando UDP\r\n");
-            ESP01_StartUDP("192.168.100.5", /*RemotePORT=*/30010, /*LocalPORT=*/30000);
-            break;
-        case ESP01_UDPTCP_CONNECTED:
-            ESP01_USB_DbgStr(">>> UDP conectado OK\r\n");
-            const char test[] = "HELLO";
-            ESP01_Send((uint8_t*)test, 0, sizeof(test)-1, sizeof(test)-1);
 
-            break;
-        case ESP01_UDPTCP_DISCONNECTED:
-            ESP01_USB_DbgStr(">>> UDP desconectado\r\n");
-            break;
-        default:
-            break;
-    }
-}
 
 
 /* USER CODE END 0 */
@@ -871,7 +852,6 @@ int main(void)
   ESP01_Init(&esp01Handle);                        // Copia el handle interno :contentReference[oaicite:1]{index=1}
   esp01_chpd(1);  // Pone CH_PD a nivel alto para sacar al módulo de reset
   HAL_Delay(100);
-  ESP01_AttachChangeState(onESP01StateChange);
   ESP01_AttachDebugStr(ESP01_USB_DbgStr);
   ESP01_SetWIFI(wifiSSID, wifiPassword);
 
@@ -952,13 +932,13 @@ int main(void)
 			  }
 		  }
 
-		  /*sendModulesCounter++;
+		  sendModulesCounter++;
 		  if (sendModulesCounter >= 20) {
 			  sendModulesCounter = 0;
 			  if (UNER_ShouldSendAllSensors()) {
 				  UNER_SendAllSensors();
 			  }
-		  }*/
+		  }
 
 		  mpu6050Counter++;
 		  if (mpu6050Counter >= 2 && mpu_initialized) {

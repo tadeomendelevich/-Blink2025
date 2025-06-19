@@ -439,7 +439,7 @@ void UNER_SendAlive(void) {
 }
 
 void UNER_SendAllSensors(void) {
-	if (ESP01_IsSending() || ESP01_StateUDPTCP() != ESP01_UDPTCP_CONNECTED)
+	if (ESP01_IsSending())
 	        return;
 
 	unerTx->indexW = 0;

@@ -10,6 +10,9 @@
 #include <string.h>
 #include <stdlib.h>
 
+#define SERVER_IP    "172.23.205.98"
+#define SERVER_PORT  30010
+#define LOCAL_PORT   30000
 
 static enum {
 	ESP01ATIDLE,
@@ -79,7 +82,7 @@ static _sESP01Handle esp01Handle = {.aDoCHPD = NULL, .aWriteUSARTByte = NULL,
 									.bufRX = NULL, .iwRX = NULL, .sizeBufferRX = 0};
 
 const char ATAT[] = "AT\r\n";
-const char ATCIPMUX[] = "AT+CIPMUX=0\r\n";
+const char ATCIPMUX[] = "AT+CIPMUX=1\r\n";
 const char ATCWQAP[] = "AT+CWQAP\r\n";
 const char ATCWMODE[] = "AT+CWMODE=3\r\n";
 const char ATCWJAP[] = "AT+CWJAP=";
@@ -118,13 +121,17 @@ const char *const responses[] = {respAT, respATp, respOK, respERROR, respWIFIGOT
 static uint8_t indexResponse = 0;
 static uint8_t indexResponseChar = 0;
 
+static uint8_t tryingTCP = 0;
+static uint8_t waitingForTCPClient = 0;
+
+extern void UNER_SendAlive(void);
+
 //const char _DNSFAIL[] = "DNS FAIL\r";
 //const char _ATCIPDNS[] = "AT+CIPDNS_CUR=1,\"208.67.220.220\",\"8.8.8.8\"\r\n";
 //const char CIFSRAPIP[] = "+CIFSR:APIP\r";
 //const char CIFSRAPMAC[] = "+CIFSR:APMAC\r";
 //const char CIFSRSTAIP[] = "+CIFSR:STAIP\r";
 //const char CIFSRSTAMAC[] = "+CIFSR:STAMAC\r";
-
 
 void ESP01_SetWIFI(const char *ssid, const char *password){
 	esp01ATSate = ESP01ATIDLE;
@@ -158,7 +165,7 @@ _eESP01STATUS ESP01_StartUDP(const char *RemoteIP, uint16_t RemotePORT, uint16_t
 	itoa(RemotePORT, esp01RemotePORT, 10);
 	itoa(LocalPORT, esp01LocalPORT, 10);
 
-	if(esp01SSID == '\0')
+	if(esp01SSID[0] == '\0')
 		return ESP01_WIFI_NOT_SETED;
 
 	if(esp01Flags.bit.WIFICONNECTED == 0)
@@ -184,7 +191,7 @@ _eESP01STATUS ESP01_StartTCP(const char *RemoteIP, uint16_t RemotePORT, uint16_t
 	itoa(RemotePORT, esp01RemotePORT, 10);
 	itoa(LocalPORT, esp01LocalPORT, 10);
 
-	if(esp01SSID == '\0')
+	if(esp01SSID[0] == '\0')
 		return ESP01_WIFI_NOT_SETED;
 
 	if(esp01Flags.bit.WIFICONNECTED == 0)
@@ -291,6 +298,7 @@ _eESP01STATUS ESP01_Send(uint8_t *buf, uint16_t irRingBuf, uint16_t length, uint
 void ESP01_Init(_sESP01Handle *hESP01){
 
 	memcpy(&esp01Handle, hESP01, sizeof(_sESP01Handle));
+	ESP01_AttachChangeState(onESP01StateChange);
 
 	esp01ATSate = ESP01ATIDLE;
 	esp01HState = 0;
@@ -472,6 +480,10 @@ static void ESP01ATDecode(){
 						aESP01ChangeState(ESP01_SEND_OK);
 					break;
 				case 10://CONNECT
+					if (waitingForTCPClient) {
+						waitingForTCPClient = 0;
+						ESP01_USB_DbgStr(">>> Cliente TCP conectado\r\n");
+					}
 					esp01TimeoutTask = 0;
 					esp01Flags.bit.ATRESPONSEOK = 1;
 					esp01Flags.bit.UDPTCPCONNECTED = 1;
@@ -586,6 +598,18 @@ static void ESP01ATDecode(){
 
 static void ESP01DOConnection(){
 
+	// Si se acabó el timeout esperando cliente TCP, paso a UDP
+	if (waitingForTCPClient && esp01TimeoutTask == 0) {
+	    waitingForTCPClient = 0;
+	    ESP01_USB_DbgStr(">>> Timeout TCP, desactivo server y paso a UDP...\r\n");
+	    // primero cierro el servidor
+	    ESP01StrToBufTX("AT+CIPSERVER=0\r\n");
+	    // ahora inicio UDP normal hacia el PC
+	    ESP01_StartUDP(SERVER_IP, SERVER_PORT, LOCAL_PORT);
+	    return;
+	}
+
+
 	esp01TimeoutTask = 100;
 	switch(esp01ATSate){
 	case ESP01ATIDLE:
@@ -632,17 +656,20 @@ static void ESP01DOConnection(){
 			esp01ATSate = ESP01ATAT;
 		break;
 	case ESP01ATCWMODE:
-		ESP01StrToBufTX(ATCWMODE);
-		if(aDbgStr != NULL)
-			aDbgStr("+&DBGESP01ATCWMODE\n");
-		esp01ATSate = ESP01ATCIPMUX;
-		break;
+	    // 1) modo SoftAP + Station
+	    ESP01StrToBufTX("AT+CWMODE=3\r\n");
+	    // 2) configuro el SoftAP: SSID="MiESP01", clave="miclave123", canal=5, WPA2
+	    ESP01StrToBufTX("AT+CWSAP=\"ESPTADEO\",\"TADEOPASS\",5,3\r\n");
+	    // 3) enciendo DHCP para el AP
+	    ESP01StrToBufTX("AT+CWDHCP=2,1\r\n");
+	    esp01ATSate = ESP01ATCIPMUX;
+	    break;
 	case ESP01ATCIPMUX:
-		ESP01StrToBufTX(ATCIPMUX);
-		if(aDbgStr != NULL)
-			aDbgStr("+&DBGESP01ATCIPMUX\n");
-		esp01ATSate = ESP01ATCWJAP;
-		break;
+	    ESP01StrToBufTX("AT+CIPMUX=1\r\n");
+	    ESP01StrToBufTX("AT+CIPSERVER=1,80\r\n");
+	    if(aDbgStr) aDbgStr("+&DBGESP01ATCIPMUX+SERVER\n");
+	    esp01ATSate = ESP01ATCIFSR;   // ← directamente a pedir la IP del AP
+	    break;
 	case ESP01ATCWJAP:
 		if(esp01Flags.bit.WIFICONNECTED){
 			esp01ATSate = ESP01ATCIFSR;
@@ -724,14 +751,26 @@ static void ESP01DOConnection(){
 		esp01Flags.bit.ATRESPONSEOK = 0;
 		esp01Flags.bit.UDPTCPCONNECTED = 0;
 		esp01ATSate = ESP01CIPSTARTRESPONSE;
-		esp01TimeoutTask = 200;
+		esp01TimeoutTask = 30000;	// TIEMPO PARA CONECTARME AL  SERVER TCP
 		break;
 	case ESP01CIPSTARTRESPONSE:
-		if(esp01Flags.bit.ATRESPONSEOK)
-			esp01ATSate = ESP01ATCONNECTED;
-		else
-			esp01ATSate = ESP01ATAT;
-		break;
+	    if (esp01Flags.bit.ATRESPONSEOK) {
+	        // TCP conectado correctamente
+	        esp01ATSate = ESP01ATCONNECTED;
+	    }
+	    else if (tryingTCP) {
+	        // Falló el CONNECT por TCP: pasamos a UDP
+	        tryingTCP = 0;
+	        ESP01_USB_DbgStr(">>> TCP CONNECT falló, cambiando a UDP...\r\n");
+	        ESP01_StartUDP(SERVER_IP, SERVER_PORT, LOCAL_PORT);
+	        // ESP01_StartUDP ya pone esp01ATSate = ESP01ATCIPCLOSE
+	    }
+	    else {
+	        // Ni TCP ni UDP: reiniciamos la secuencia AT
+	        esp01ATSate = ESP01ATAT;
+	    }
+	    break;
+
 	case ESP01ATCONNECTED:
 		if(esp01Flags.bit.WIFICONNECTED == 0){
 			esp01ATSate = ESP01ATAT;
@@ -801,6 +840,30 @@ void ESP01_USB_DbgStr(const char *dbgStr) {
     USB_DebugStr(dbgStr);
 }
 
+void onESP01StateChange(_eESP01STATUS state) {
+    switch (state) {
+		case ESP01_WIFI_NEW_IP: {
+			// Arranco servidor TCP en LOCAL_PORT
+			ESP01StrToBufTX("AT+CIPMUX=1\r\n");                     // múltiples clientes
+			char cmd[32];
+			  snprintf(cmd, sizeof(cmd), "AT+CIPSERVER=1,%d\r\n", LOCAL_PORT);
+			  ESP01StrToBufTX(cmd);
+			if(aDbgStr) aDbgStr(">>> Servidor TCP arrancado\r\n");
+			waitingForTCPClient = 1;
+			esp01TimeoutTask = 60000;     // 60s para que el móvil se conecte
+			break;
+		}
+        case ESP01_UDPTCP_CONNECTED:
+            ESP01_USB_DbgStr(">>> UDP conectado OK\r\n");
+            UNER_SendAlive();
+            break;
+        case ESP01_UDPTCP_DISCONNECTED:
+            ESP01_USB_DbgStr(">>> UDP desconectado\r\n");
+            break;
+        default:
+            break;
+    }
+}
 
 
 
