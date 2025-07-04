@@ -121,17 +121,17 @@ static const char HEX_DIGITS[] = "0123456789ABCDEF";	// Tabla de dígitos hex
 
 uint8_t *sendAllSensors;
 
-const char *wifiSSID     = "FCAL";
-const char *wifiPassword = "fcalconcordia.06-2019";
-const char *wifiIp = "172.23.205.98";
+//const char *wifiSSID     = "FCAL";
+//const char *wifiPassword = "fcalconcordia.06-2019";
+//const char *wifiIp = "172.23.205.98";
 
 //const char *wifiSSID     = "MEGACABLE FIBRA-2.4G-ckd0";
 //const char *wifiPassword = "djg19dlk";
 //const char *wifiIp = "192.168.100.5";
 
-//const char *wifiSSID     = "Delco_Mendelevich";
-//const char *wifiPassword = "toyotakia";
-//const char *wifiIp = "192.168.123.57";
+const char *wifiSSID     = "Delco_Mendelevich";
+const char *wifiPassword = "toyotakia";
+const char *wifiIp = "192.168.123.118";
 
 
 static int32_t ax_ema = 0, ay_ema = 0, az_ema = 0;
@@ -923,14 +923,14 @@ int main(void)
 		  }
 
 
-		  aliveCounter++;
+		  /*aliveCounter++;
 		  if (aliveCounter >= 200) {
 			  aliveCounter = 0;
 			  if (ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED
 			      && !ESP01_IsSending()) {
 			      UNER_SendAlive();
 			  }
-		  }
+		  }*/
 
 		  sendModulesCounter++;
 		  if (sendModulesCounter >= 20) {

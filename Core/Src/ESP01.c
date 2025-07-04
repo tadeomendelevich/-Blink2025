@@ -9,10 +9,14 @@
 #include <stddef.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
+#include "stm32f1xx_hal.h"
 
-#define SERVER_IP    "172.23.205.98"
+//#define SERVER_IP    "172.23.205.98"	// Facultad
+#define SERVER_IP 	 "192.168.100.5"	// Departamento concordia
 #define SERVER_PORT  30010
 #define LOCAL_PORT   30000
+#define ALIVE_INTERVAL_MS 3000
 
 static enum {
 	ESP01ATIDLE,
@@ -27,6 +31,7 @@ static enum {
 	ESP01ATCIPCLOSE,
 	ESP01ATCIPSTART,
 	ESP01CIPSTARTRESPONSE,
+	ESP01ATPREPUDP,
 	ESP01ATCONNECTED,
 	ESP01ATHARDRST0,
 	ESP01ATHARDRST1,
@@ -62,7 +67,7 @@ static ESP01DebugStr aDbgStr = NULL;
 static char esp01SSID[64] = {0};
 static char esp01PASSWORD[32] = {0};
 static char esp01RemoteIP[16] = {0};
-static char esp01PROTO[4] = "UDP";
+static char esp01PROTO[4] = "TCP";
 static char esp01RemotePORT[6] = {0};
 static char esp01LocalIP[16] = {0};
 static char esp01LocalPORT[6] = {0};
@@ -88,7 +93,8 @@ const char ATCWMODE[] = "AT+CWMODE=3\r\n";
 const char ATCWJAP[] = "AT+CWJAP=";
 const char ATCIFSR[] = "AT+CIFSR\r\n";
 const char ATCIPSTART[] = "AT+CIPSTART=";
-const char ATCIPCLOSE[] = "AT+CIPCLOSE\r\n";
+//const char ATCIPCLOSE[] = "AT+CIPCLOSE\r\n";
+const char ATCIPCLOSE[] = "AT+CIPCLOSE=0\r\n";
 const char ATCIPSEND[] = "AT+CIPSEND=";
 
 const char respAT[] = "0302AT\r";
@@ -123,6 +129,12 @@ static uint8_t indexResponseChar = 0;
 
 static uint8_t tryingTCP = 0;
 static uint8_t waitingForTCPClient = 0;
+static uint16_t lastIPDlen = 0;  // guarda la longitud del +IPD
+
+static uint8_t tcpServerStarted = 0;
+static uint8_t configUDPObtenida = 0;
+static uint8_t udpIniciado = 0;
+static uint32_t lastAliveTick = 0;
 
 extern void UNER_SendAlive(void);
 
@@ -144,13 +156,18 @@ void ESP01_SetWIFI(const char *ssid, const char *password){
 
 	esp01TimeoutTask = 50;
 	esp01ATSate = ESP01ATHARDRST0;
-
 	esp01TriesAT = 0;
-
 }
 
 
 _eESP01STATUS ESP01_StartUDP(const char *RemoteIP, uint16_t RemotePORT, uint16_t LocalPORT){
+	char buf[100];
+	sprintf(buf,
+		">> ESP01_StartUDP params: IP=%s, RemotePort=%u, LocalPort=%u\r\n",
+		RemoteIP, (unsigned)RemotePORT, (unsigned)LocalPORT);
+	aDbgStr(buf);
+
+
 	if(esp01Handle.aWriteUSARTByte == NULL)
 		return ESP01_NOT_INIT;
 
@@ -158,9 +175,7 @@ _eESP01STATUS ESP01_StartUDP(const char *RemoteIP, uint16_t RemotePORT, uint16_t
 		LocalPORT = 30000;
 
 	strcpy(esp01PROTO, "UDP");
-
-	strncpy(esp01RemoteIP, RemoteIP, 15);
-	esp01RemoteIP[15] = '\0';
+	udpIniciado      = 0;
 
 	itoa(RemotePORT, esp01RemotePORT, 10);
 	itoa(LocalPORT, esp01LocalPORT, 10);
@@ -265,7 +280,8 @@ _eESP01STATUS ESP01_Send(uint8_t *buf, uint16_t irRingBuf, uint16_t length, uint
 
 		ESP01StrToBufTX(ATCIPSEND);
 		ESP01StrToBufTX(strInt);
-		ESP01StrToBufTX("\r>");
+		ESP01StrToBufTX("\r\n");
+
 
 		for(uint16_t i=0; i<length; i++){
 			esp01TXATBuf[esp01iwTX++] = buf[irRingBuf++];
@@ -333,6 +349,20 @@ void ESP01_Task(){
 		ESP01DOConnection();
 
 	ESP01SENDData();
+
+	// ——— Alive periódico UDP ———
+	if (strcmp(esp01PROTO, "UDP")==0 && esp01Flags.bit.UDPTCPCONNECTED) {
+		uint32_t now = HAL_GetTick();
+		if ((now - lastAliveTick) >= ALIVE_INTERVAL_MS) {
+			// sólo enviamos si no estamos ya en medio de un envío
+			if (!esp01Flags.bit.SENDINGDATA) {
+				lastAliveTick = now;
+				const char heartbeat[] = "HOLA\r\n";  // nuevo mensaje
+				ESP01_Send((uint8_t*)heartbeat, 0, sizeof(heartbeat)-1, sizeof(heartbeat)-1);
+				aDbgStr(">>> Heartbeat UDP enviado\r\n");
+			}
+		}
+	}
 }
 
 void ESP01_AttachChangeState(OnESP01ChangeState aOnESP01ChangeState){
@@ -368,6 +398,15 @@ static void ESP01ATDecode(){
 	esp01TimeoutDataRx = 2;
 	while(esp01irRXAT != i){
 		value = esp01RXATBuf[esp01irRXAT];
+
+	    // DEBUG: muestro cada byte RX en hex
+	    if(aDbgStr){
+	        char dbg[8];
+	        snprintf(dbg, sizeof(dbg), "%02X ", value);
+	        aDbgStr(dbg);
+	    }
+
+
 		switch(esp01HState){
 		case 0:
             indexResponse = 0;
@@ -432,18 +471,27 @@ static void ESP01ATDecode(){
 			indexResponseChar++;
 			break;
 		case 2:
-			if(value == '\n'){
-				esp01HState = 0;
-				switch(indexResponse){
-				case 0://AT
-				case 1:
-					break;
-				case 2://OK
-					if(esp01ATSate == ESP01ATRESPONSE){
-						esp01TimeoutTask = 0;
-						esp01Flags.bit.ATRESPONSEOK = 1;
-					}
-					break;
+		    if(value == '\n'){
+		        esp01HState = 0;
+		        /*if (aDbgStr) {
+					char dbgBuf[64];
+					sprintf(dbgBuf, "DEBUG: RECIBI OK - estado actual = %d\n", esp01ATSate);
+					aDbgStr(dbgBuf);
+				}*/
+		        switch(indexResponse){
+		        case 0://AT
+		        case 1:
+		            break;
+		        case 2: // OK
+		            if(esp01ATSate == ESP01ATRESPONSE){
+		                esp01TimeoutTask = 0;
+		                esp01Flags.bit.ATRESPONSEOK = 1;
+		            }
+		            else if (esp01ATSate == ESP01CIPSTARTRESPONSE && strcmp(esp01PROTO, "UDP")==0) {
+		            	esp01Flags.bit.ATRESPONSEOK   = 1;
+		                if (aESP01ChangeState) aESP01ChangeState(ESP01_UDPTCP_CONNECTED);
+		            }
+		            break;
 				case 3://ERROR
 					if(esp01Flags.bit.SENDINGDATA){
 						esp01Flags.bit.SENDINGDATA = 0;
@@ -548,42 +596,116 @@ static void ESP01ATDecode(){
 					aESP01ChangeState(ESP01_WIFI_NEW_IP);
 			}
 			break;
-		case 10://IPD
-			if(value == ','){
-				esp01HState = 11;
-				esp01nBytes = 0;
-			}
-			else{
-				esp01HState = 0;
-				esp01irRXAT--;
-			}
-			break;
-		case 11:
-			if(value == ':')
-				esp01HState = 12;
-			else{
-				if(value<'0' || value>'9'){
-					esp01HState = 0;
-					esp01irRXAT--;
-				}
-				else{
-					esp01nBytes *= 10;
-					esp01nBytes += (value - '0');
-				}
-			}
-			break;
-		case 12:
-			esp01Handle.bufRX[*esp01Handle.iwRX] = value;
-			(*esp01Handle.iwRX)++;
-			if(*esp01Handle.iwRX == esp01Handle.sizeBufferRX)
-				*esp01Handle.iwRX = 0;
-			esp01nBytes--;
-			if(!esp01nBytes){
-				esp01HState = 0;
-				if(aDbgStr != NULL)
-					aDbgStr("+&DBGRESPONSE IPD\n");
-			}
-			break;
+		case 10:  // acabamos de detectar "+IPD"
+		    if (value == ',') {
+		        esp01HState = 11;   // pasamos al estado de saltar linkId
+		    }
+		    // si no es coma, seguimos aquí (descartamos cualquier otro carácter)
+		    break;
+
+		case 11:  // salto el linkId hasta encontrar la siguiente coma
+		    if (value == ',') {
+		        esp01HState = 12;   // ahora viene el número de bytes
+		        esp01nBytes = 0;    // reinicio contador para la longitud
+		    }
+		    break;
+
+		case 12:  // parseo la longitud hasta encontrar ':'
+		    if (value >= '0' && value <= '9') {
+		        esp01nBytes = esp01nBytes * 10 + (value - '0');
+		    }
+		    else if (value == ':') {
+		        lastIPDlen = esp01nBytes;  // guardo la longitud definitiva
+		        esp01HState = 13;          // pasamos a leer los datos
+		    }
+		    else {
+		        // si hay algo inesperado, reseteo
+		        esp01HState = 0;
+		    }
+		    break;
+		case 13:  // aquí recibo byte a byte el payload TCP
+		    // lo almaceno en el buffer circular
+		    esp01Handle.bufRX[*esp01Handle.iwRX] = value;
+		    (*esp01Handle.iwRX)++;
+		    if (*esp01Handle.iwRX == esp01Handle.sizeBufferRX)
+		        *esp01Handle.iwRX = 0;
+
+		    // decrementamos el contador
+		    esp01nBytes--;
+		    if (esp01nBytes == 0) {
+		        // ya se leyó todo, volvemos al estado base
+		        esp01HState = 0;
+
+		        // imprimimos en debug los lastIPDlen bytes
+		        uint16_t start = (*esp01Handle.iwRX + esp01Handle.sizeBufferRX - lastIPDlen)
+		                         % esp01Handle.sizeBufferRX;
+		        for (uint16_t i = 0; i < lastIPDlen; ++i) {
+		            uint8_t c = esp01Handle.bufRX[(start + i) % esp01Handle.sizeBufferRX];
+		            char s[2] = { c, '\0' };
+		            if (aDbgStr) aDbgStr(s);
+		        }
+		        if (aDbgStr) aDbgStr("\r\n");
+
+		        // sólo procesamos la trama de configuración una vez
+		        if (!configUDPObtenida) {
+		            // 1) copiamos a un buffer temporal y cerramos con '\0'
+		            char cmd[lastIPDlen + 1];
+		            for (uint16_t i = 0; i < lastIPDlen; ++i) {
+		                cmd[i] = esp01Handle.bufRX[(start + i) % esp01Handle.sizeBufferRX];
+		            }
+		            cmd[lastIPDlen] = '\0';
+
+			        // 2) Tokenizamos por comas
+			        char *p = strtok(cmd, ",");
+			        if (!p) return;  // error de formato
+
+			        // SSID
+			        strncpy(esp01SSID, p, sizeof(esp01SSID) - 1);
+			        esp01SSID[sizeof(esp01SSID) - 1] = '\0';
+
+			        // PASSWORD
+			        p = strtok(NULL, ",");
+			        if (!p) return;
+			        strncpy(esp01PASSWORD, p, sizeof(esp01PASSWORD) - 1);
+			        esp01PASSWORD[sizeof(esp01PASSWORD) - 1] = '\0';
+
+			        // REMOTE_IP
+			        p = strtok(NULL, ",");
+			        if (!p) return;
+			        strncpy(esp01RemoteIP, p, sizeof(esp01RemoteIP) - 1);
+			        esp01RemoteIP[sizeof(esp01RemoteIP) - 1] = '\0';
+
+			        // REMOTE_PORT
+			        p = strtok(NULL, ",");
+			        if (!p) return;
+			        uint16_t port = atoi(p);
+
+			        // ———> Aquí imprimimos lo recibido <———
+			        aDbgStr("Configuracion recibida:\n");
+			        aDbgStr("SSID: ");       aDbgStr(esp01SSID);    aDbgStr("\n");
+			        aDbgStr("PASSWORD: ");   aDbgStr(esp01PASSWORD);aDbgStr("\n");
+			        aDbgStr("REMOTE IP: ");  aDbgStr(esp01RemoteIP); aDbgStr("\n");
+			        aDbgStr("REMOTE PORT: ");{ char buf[6]; itoa(port, buf, 10); aDbgStr(buf);} aDbgStr("\n");
+
+			        // 3) arrancamos UDP con los nuevos parámetros
+			        ESP01_StartUDP(esp01RemoteIP, port, LOCAL_PORT);
+			        configUDPObtenida = 1;
+			        esp01ATSate      = ESP01ATCIPMUX;   // para que el FSM salte directo al PREPUDP
+
+			        // Forzamos que en la próxima ESP01_Task() entre directo en DOConnection()
+			        esp01TimeoutTask = 0;
+
+			        // ———> Y volvemos a reimprimir tras lanzar el UDP <———
+			        aDbgStr("Lanzando UDP con:\n");
+			        aDbgStr("SSID: ");       aDbgStr(esp01SSID);    aDbgStr("\n");
+			        aDbgStr("PASSWORD: ");   aDbgStr(esp01PASSWORD);aDbgStr("\n");
+			        aDbgStr("REMOTE IP: ");  aDbgStr(esp01RemoteIP); aDbgStr("\n");
+			        aDbgStr("REMOTE PORT: ");{ char buf2[6]; itoa(port, buf2, 10); aDbgStr(buf2);} aDbgStr("\n");
+
+		        }
+		        // si ya tenía configUDPObtenida == 1, simplemente ignoramos este IPD
+		    }
+		    break;
 		default:
 			esp01HState = 0;
 			esp01TimeoutDataRx = 0;
@@ -597,17 +719,52 @@ static void ESP01ATDecode(){
 }
 
 static void ESP01DOConnection(){
+	/*if (aDbgStr) {
+		char buf[100];
+		sprintf(buf,
+			">> DOConnection: state=%d, configUDP=%d, udpIniciado=%d, PROTO=%s\r\n",
+			esp01ATSate, configUDPObtenida, udpIniciado, esp01PROTO);
+		aDbgStr(buf);
+	}*/
 
-	// Si se acabó el timeout esperando cliente TCP, paso a UDP
-	if (waitingForTCPClient && esp01TimeoutTask == 0) {
-	    waitingForTCPClient = 0;
-	    ESP01_USB_DbgStr(">>> Timeout TCP, desactivo server y paso a UDP...\r\n");
-	    // primero cierro el servidor
-	    ESP01StrToBufTX("AT+CIPSERVER=0\r\n");
-	    // ahora inicio UDP normal hacia el PC
-	    ESP01_StartUDP(SERVER_IP, SERVER_PORT, LOCAL_PORT);
-	    return;
-	}
+	// 1) Si ya tengo la config pendiente y no he lanzado UDP
+	/*if (configUDPObtenida && !udpIniciado && strcmp(esp01PROTO, "UDP")==0) {
+		// deshabilito el servidor TCP y cierro el socket
+		ESP01StrToBufTX("AT+CIPSERVER=0,"); ESP01StrToBufTX(esp01LocalPORT); ESP01StrToBufTX("\r\n");
+		ESP01StrToBufTX("AT+CIPCLOSE=0\r\n");
+
+		// apago multiplexado
+		ESP01StrToBufTX("AT+CIPMUX=0\r\n");
+
+		// lanzo el socket UDP con la IP ya intacta en esp01RemoteIP
+		ESP01StrToBufTX("AT+CIPSTART=\"UDP\",\"");
+		ESP01StrToBufTX(esp01RemoteIP);
+		ESP01StrToBufTX("\",");
+		ESP01StrToBufTX(esp01RemotePORT);
+		ESP01StrToBufTX(",");
+		ESP01StrToBufTX(esp01LocalPORT);
+		ESP01StrToBufTX(",0\r\n");
+
+		udpIniciado      = 1;
+		esp01ATSate      = ESP01CIPSTARTRESPONSE;
+		esp01TimeoutTask = 3000;
+		return;
+	}*/
+
+
+    // 2a) Si antes estábamos en ATCONNECTED pero ahora UDPTCPCONNECTED cayó, relanzamos UDP
+    if (esp01ATSate == ESP01ATCONNECTED && !esp01Flags.bit.UDPTCPCONNECTED) {
+        aDbgStr(">>> UDP perdido, reintentando conexión...\r\n");
+        // Volver al cierre para reabrir UDP en el próximo tick
+        esp01ATSate     = ESP01ATCIPCLOSE;
+        esp01TimeoutTask = 0;
+        return;
+    }
+    // 2b) Si seguimos vivos por UDP, sólo esperamos antes de chequear de nuevo
+    if (esp01ATSate == ESP01ATCONNECTED && esp01Flags.bit.UDPTCPCONNECTED) {
+        esp01TimeoutTask = 100;
+        return;
+    }
 
 
 	esp01TimeoutTask = 100;
@@ -665,10 +822,32 @@ static void ESP01DOConnection(){
 	    esp01ATSate = ESP01ATCIPMUX;
 	    break;
 	case ESP01ATCIPMUX:
-	    ESP01StrToBufTX("AT+CIPMUX=1\r\n");
-	    ESP01StrToBufTX("AT+CIPSERVER=1,80\r\n");
-	    if(aDbgStr) aDbgStr("+&DBGESP01ATCIPMUX+SERVER\n");
-	    esp01ATSate = ESP01ATCIFSR;   // ← directamente a pedir la IP del AP
+	    if (strcmp(esp01PROTO, "TCP") == 0) {
+	        // multiplicado y server en TCP
+	        ESP01StrToBufTX("AT+CIPMUX=1\r\n");
+	        ESP01StrToBufTX("AT+CIPSERVER=1,80\r\n");
+	        aDbgStr("+&DBGESP01ATCIPMUX+SERVER\n");
+	        esp01ATSate = ESP01ATCIFSR;        // sigue con CIFSR en TCP
+	    } else {
+	        // UDP: multiplex = 0, NO server
+	        ESP01StrToBufTX("AT+CIPMUX=0\r\n");
+	        aDbgStr("+&DBGESP01ATCIPMUX(single)\n");
+	        esp01ATSate = ESP01ATPREPUDP;
+	    }
+	    break;
+	case ESP01ATPREPUDP:
+	    ESP01StrToBufTX("AT+CIPSERVER=0\r\n");
+	    ESP01StrToBufTX("AT+CIPCLOSE=0\r\n");
+	    ESP01StrToBufTX("AT+CIPMUX=0\r\n");
+	    ESP01StrToBufTX("AT+CIPSTART=\"UDP\",\"");
+	    ESP01StrToBufTX(esp01RemoteIP);
+	    ESP01StrToBufTX("\",");
+	    ESP01StrToBufTX(esp01RemotePORT);
+	    ESP01StrToBufTX(",");
+	    ESP01StrToBufTX(esp01LocalPORT);
+	    ESP01StrToBufTX(",0\r\n");
+	    esp01ATSate      = ESP01CIPSTARTRESPONSE;
+	    esp01TimeoutTask = 3000;
 	    break;
 	case ESP01ATCWJAP:
 		if(esp01Flags.bit.WIFICONNECTED){
@@ -742,45 +921,56 @@ static void ESP01DOConnection(){
 		ESP01StrToBufTX(esp01RemotePORT);
 		ESP01ByteToBufTX(',');
 		ESP01StrToBufTX(esp01LocalPORT);
-		ESP01ByteToBufTX(',');
-		ESP01ByteToBufTX('0');
-		ESP01ByteToBufTX('\r');
-		ESP01ByteToBufTX('\n');
+		ESP01StrToBufTX(",0\r\n");  // <-- ¡añadido ,0!
 		if(aDbgStr != NULL)
 			aDbgStr("+&DBGESP01ATCIPSTART\n");
 		esp01Flags.bit.ATRESPONSEOK = 0;
 		esp01Flags.bit.UDPTCPCONNECTED = 0;
 		esp01ATSate = ESP01CIPSTARTRESPONSE;
-		esp01TimeoutTask = 30000;	// TIEMPO PARA CONECTARME AL  SERVER TCP
+		// Si es UDP, usamos un timeout corto para el workaround
+		if (strcmp(esp01PROTO, "UDP") == 0)
+		    esp01TimeoutTask = 3000;   // 1 segundo
+		else
+		    esp01TimeoutTask = 30000;  // 30 s para TCP
 		break;
 	case ESP01CIPSTARTRESPONSE:
-	    if (esp01Flags.bit.ATRESPONSEOK) {
-	        // TCP conectado correctamente
-	        esp01ATSate = ESP01ATCONNECTED;
-	    }
-	    else if (tryingTCP) {
-	        // Falló el CONNECT por TCP: pasamos a UDP
-	        tryingTCP = 0;
-	        ESP01_USB_DbgStr(">>> TCP CONNECT falló, cambiando a UDP...\r\n");
-	        ESP01_StartUDP(SERVER_IP, SERVER_PORT, LOCAL_PORT);
-	        // ESP01_StartUDP ya pone esp01ATSate = ESP01ATCIPCLOSE
-	    }
-	    else {
-	        // Ni TCP ni UDP: reiniciamos la secuencia AT
-	        esp01ATSate = ESP01ATAT;
-	    }
-	    break;
+		if (esp01Flags.bit.ATRESPONSEOK) {
+			// ya se abrió el socket UDP
+			esp01ATSate = ESP01ATCONNECTED;
+			esp01Flags.bit.UDPTCPCONNECTED = 1;
+
+			// <<< debug: UDP funcional >>>
+			if (strcmp(esp01PROTO, "UDP")==0 && aDbgStr) {
+				aDbgStr(">>> DEBUG: AT+CIPSTART OK, UDP socket abierto\r\n");
+			}
+
+
+			if (aESP01ChangeState)
+				aESP01ChangeState(ESP01_UDPTCP_CONNECTED);
+		} else if (tryingTCP) {
+			tryingTCP = 0;
+			ESP01_USB_DbgStr(">>> TCP CONNECT falló, cambiando a UDP...\r\n");
+			ESP01_StartUDP(SERVER_IP, SERVER_PORT, LOCAL_PORT);
+		} else {
+			esp01ATSate = ESP01ATCIPSTART;  // reintenta sólo el START
+			esp01TimeoutTask = 1000;        // y dale otro segundo
+		}
+		break;
 
 	case ESP01ATCONNECTED:
-		if(esp01Flags.bit.WIFICONNECTED == 0){
+		// <<< debug: máquina en ESP01ATCONNECTED con UDP >>>
+		if (strcmp(esp01PROTO, "UDP")==0 && aDbgStr) {
+			aDbgStr(">>> DEBUG: DOConnection en ESP01ATCONNECTED (UDP vivo)\r\n");
+		}
+
+		// si perdimos wifi o la conexión UDP, reintenta
+		if (!esp01Flags.bit.WIFICONNECTED) {
 			esp01ATSate = ESP01ATAT;
-			break;
-		}
-		if(esp01Flags.bit.UDPTCPCONNECTED == 0){
+		} else if (!esp01Flags.bit.UDPTCPCONNECTED) {
 			esp01ATSate = ESP01ATCIPCLOSE;
-			break;
+		} else {
+			esp01TimeoutTask = 0;
 		}
-		esp01TimeoutTask = 0;
 		break;
 	}
 }
@@ -819,6 +1009,12 @@ static void ESP01SENDData(){
 }
 
 static void ESP01StrToBufTX(const char *str){
+	// DEBUG: muestro en consola todo lo que voy a enviar
+	    if(aDbgStr){
+	        aDbgStr(">> TX: ");
+	        aDbgStr(str);
+	    }
+
 	for(int i=0; str[i]; i++){
 		esp01TXATBuf[esp01iwTX++] = str[i];
 		if(esp01iwTX == ESP01TXBUFAT)
@@ -842,28 +1038,49 @@ void ESP01_USB_DbgStr(const char *dbgStr) {
 
 void onESP01StateChange(_eESP01STATUS state) {
     switch (state) {
-		case ESP01_WIFI_NEW_IP: {
-			// Arranco servidor TCP en LOCAL_PORT
-			ESP01StrToBufTX("AT+CIPMUX=1\r\n");                     // múltiples clientes
-			char cmd[32];
-			  snprintf(cmd, sizeof(cmd), "AT+CIPSERVER=1,%d\r\n", LOCAL_PORT);
-			  ESP01StrToBufTX(cmd);
-			if(aDbgStr) aDbgStr(">>> Servidor TCP arrancado\r\n");
-			waitingForTCPClient = 1;
-			esp01TimeoutTask = 60000;     // 60s para que el móvil se conecte
-			break;
-		}
-        case ESP01_UDPTCP_CONNECTED:
-            ESP01_USB_DbgStr(">>> UDP conectado OK\r\n");
-            UNER_SendAlive();
+        case ESP01_WIFI_NEW_IP:
+            // Sólo arrancar el servidor TCP la primera vez que recibimos IP
+            if (!tcpServerStarted && strcmp(esp01PROTO, "TCP") == 0) {
+                // Habilitar multiplexado y servidor en el ESP01
+                ESP01StrToBufTX("AT+CIPMUX=1\r\n");
+                {
+                    char cmd[32];
+                    snprintf(cmd, sizeof(cmd), "AT+CIPSERVER=1,%d\r\n", LOCAL_PORT);
+                    ESP01StrToBufTX(cmd);
+                }
+                aDbgStr(">>> Servidor TCP arrancado\r\n");
+                tcpServerStarted = 1;
+            }
             break;
+
+        case ESP01_UDPTCP_CONNECTED:
+            // Una vez conectado el cliente UDP, enviamos UNER_SendAlive
+        	if (!udpIniciado && strcmp(esp01PROTO, "UDP")==0) {
+				udpIniciado = 1;           // impide re-entradas
+				ESP01_USB_DbgStr(">>> UDP conectado OK\r\n");
+				//UNER_SendAlive();
+
+				ESP01StrToBufTX("AT+CIPSTATUS\r\n");
+
+				// Volvemos a mostrar la configuración
+				aDbgStr("=== Parámetros UDP ===\n");
+				aDbgStr("SSID: ");       aDbgStr(esp01SSID);    aDbgStr("\n");
+				aDbgStr("PASSWORD: ");   aDbgStr(esp01PASSWORD);aDbgStr("\n");
+				aDbgStr("REMOTE IP: ");  aDbgStr(esp01RemoteIP); aDbgStr("\n");
+				aDbgStr("REMOTE PORT: ");aDbgStr(esp01RemotePORT);aDbgStr("\n");
+			}
+            break;
+
         case ESP01_UDPTCP_DISCONNECTED:
+        	udpIniciado = 0;  // permite que al reconectar vuelva a entrar en UDPTCP_CONNECTED
             ESP01_USB_DbgStr(">>> UDP desconectado\r\n");
             break;
+
         default:
             break;
     }
 }
+
 
 
 
