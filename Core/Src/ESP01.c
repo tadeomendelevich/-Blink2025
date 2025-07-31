@@ -23,8 +23,11 @@ static enum {
 	ESP01ATIDLE,
 	ESP01ATAT,
 	ESP01ATRESPONSE,
-	ESP01ATCWMODE,
 	ESP01ATCIPMUX,
+	ESP01ATCWMODE_SET,
+	ESP01ATCWMODE_RESPONSE,
+	ESP01ATCWDHCP_SET,
+	ESP01ATCWDHCP_RESPONSE,
 	ESP01ATCWJAP,
 	ESP01CWJAPRESPONSE,
 	ESP01ATCIFSR,
@@ -489,16 +492,20 @@ static void ESP01ATDecode(){
 		        case 1:
 		            break;
 		        case 2: // OK
-		            if(esp01ATSate == ESP01ATRESPONSE){
-		            	aDbgStr(">>> DEBUG: marcando ATRESPONSEOK = 1\n");
+		            if (   esp01ATSate == ESP01ATRESPONSE
+		                || esp01ATSate == ESP01ATCWMODE_RESPONSE
+		                || esp01ATSate == ESP01ATCWDHCP_RESPONSE
+		                || esp01ATSate == ESP01CWJAPRESPONSE ) {
+		                aDbgStr(">>> DEBUG: marcando ATRESPONSEOK = 1\n");
 		                esp01TimeoutTask = 0;
 		                esp01Flags.bit.ATRESPONSEOK = 1;
 		            }
-		            else if (esp01ATSate == ESP01CIPSTARTRESPONSE && strcmp(esp01PROTO, "UDP")==0) {
-		            	esp01Flags.bit.ATRESPONSEOK   = 1;
+		            else if (esp01ATSate == ESP01CIPSTARTRESPONSE && strcmp(esp01PROTO, "UDP") == 0) {
+		                esp01Flags.bit.ATRESPONSEOK = 1;
 		                if (aESP01ChangeState) aESP01ChangeState(ESP01_UDPTCP_CONNECTED);
 		            }
 		            break;
+
 				case 3://ERROR
 					if(esp01Flags.bit.SENDINGDATA){
 						esp01Flags.bit.SENDINGDATA = 0;
@@ -816,23 +823,34 @@ static void ESP01DOConnection(){
 		break;
 	case ESP01ATRESPONSE:
 		if(esp01Flags.bit.ATRESPONSEOK)
-			esp01ATSate = ESP01ATCWMODE;
+			esp01ATSate = ESP01ATCWMODE_SET;
 		else
 			esp01ATSate = ESP01ATAT;
 		break;
-	case ESP01ATCWMODE:
-		// 1) ponemos modo SoftAP+Station
-		ESP01StrToBufTX("AT+CWMODE=1\r\n");
-		// 2) activamos DHCP en Station (para que saque IP de tu router)
-		ESP01StrToBufTX("AT+CWDHCP=1,1\r\n");
-		// 3) nos asociamos al router
-		ESP01StrToBufTX(ATCWJAP);
-		ESP01ByteToBufTX('\"');  ESP01StrToBufTX(esp01SSID);    ESP01ByteToBufTX('\"');
-		ESP01ByteToBufTX(',');   ESP01ByteToBufTX('\"');       ESP01StrToBufTX(esp01PASSWORD);
-		ESP01ByteToBufTX('\"');  ESP01StrToBufTX("\r\n");
-		// 4) pasamos a esperar la respuesta de CWJAP
-		esp01ATSate = ESP01ATCWJAP;
+	case ESP01ATCWMODE_SET:
+	    ESP01StrToBufTX("AT+CWMODE=1\r\n");
+	    esp01Flags.bit.ATRESPONSEOK = 0;
+	    esp01ATSate = ESP01ATCWMODE_RESPONSE;
 	    break;
+
+	case ESP01ATCWMODE_RESPONSE:
+	    if (esp01Flags.bit.ATRESPONSEOK) {
+	        esp01ATSate = ESP01ATCWDHCP_SET;
+	    }
+	    break;
+
+	case ESP01ATCWDHCP_SET:
+	    ESP01StrToBufTX("AT+CWDHCP=1,1\r\n");
+	    esp01Flags.bit.ATRESPONSEOK = 0;
+	    esp01ATSate = ESP01ATCWDHCP_RESPONSE;
+	    break;
+
+	case ESP01ATCWDHCP_RESPONSE:
+	    if (esp01Flags.bit.ATRESPONSEOK) {
+	        esp01ATSate = ESP01ATCWJAP;
+	    }
+	    break;
+
 	case ESP01ATCIPMUX:
 	    if (strcmp(esp01PROTO, "TCP") == 0) {
 	        // multiplicado y server en TCP
