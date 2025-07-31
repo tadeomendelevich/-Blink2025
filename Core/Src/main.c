@@ -131,7 +131,7 @@ uint8_t *sendAllSensors;
 
 const char *wifiSSID     = "Delco_Mendelevich";
 const char *wifiPassword = "toyotakia";
-const char *wifiIp = "192.168.123.118";
+const char *wifiIp = "192.168.123.94";
 
 
 static int32_t ax_ema = 0, ay_ema = 0, az_ema = 0;
@@ -785,7 +785,13 @@ void calculate_tilt(int16_t ax, int16_t ay, int16_t az,
     *out_pitch_deg = cordic_atan2_deg( -ax, denom );
 }
 
-
+void appOnESP01ChangeState(_eESP01STATUS state) {
+    if (state == ESP01_WIFI_NEW_IP) {
+        // Ahora que ya tenemos IP propia, arrancamos el socket UDP
+        ESP01_StartUDP(wifiIp, 30010, 30000);
+    }
+    // Si más adelante quieres TCP, aquí gestionas ESP01_UDPTCP_CONNECTED, etc.
+}
 
 
 /* USER CODE END 0 */
@@ -850,10 +856,12 @@ int main(void)
   };
 
   ESP01_Init(&esp01Handle);                        // Copia el handle interno :contentReference[oaicite:1]{index=1}
+  ESP01_AttachChangeState(appOnESP01ChangeState);
   esp01_chpd(1);  // Pone CH_PD a nivel alto para sacar al módulo de reset
   HAL_Delay(100);
   ESP01_AttachDebugStr(ESP01_USB_DbgStr);
   ESP01_SetWIFI(wifiSSID, wifiPassword);
+
 
   int16_t ax, ay, az;	// Inicializo variables de aceleracion y giroscopio
   int16_t gx, gy, gz;

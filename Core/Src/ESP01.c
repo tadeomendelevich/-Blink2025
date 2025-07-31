@@ -1,8 +1,8 @@
 /*
  * ESP01.c
  *
- *  Created on: Oct 11, 2023
- *      Author: German
+ *  Created on: July 31, 2025
+ *      Author: Tadeo Mendelevich
  */
 
 #include "ESP01.h"
@@ -13,7 +13,8 @@
 #include "stm32f1xx_hal.h"
 
 //#define SERVER_IP    "172.23.205.98"	// Facultad
-#define SERVER_IP 	 "192.168.100.5"	// Departamento concordia
+//#define SERVER_IP 	 "192.168.100.5"	// Departamento concordia
+#define SERVER_IP 	 "192.168.123.94"	// Casa Clara
 #define SERVER_PORT  30010
 #define LOCAL_PORT   30000
 #define ALIVE_INTERVAL_MS 3000
@@ -67,7 +68,8 @@ static ESP01DebugStr aDbgStr = NULL;
 static char esp01SSID[64] = {0};
 static char esp01PASSWORD[32] = {0};
 static char esp01RemoteIP[16] = {0};
-static char esp01PROTO[4] = "TCP";
+//static char esp01PROTO[4] = "TCP";
+static char esp01PROTO[4] = "UDP";
 static char esp01RemotePORT[6] = {0};
 static char esp01LocalIP[16] = {0};
 static char esp01LocalPORT[6] = {0};
@@ -177,6 +179,10 @@ _eESP01STATUS ESP01_StartUDP(const char *RemoteIP, uint16_t RemotePORT, uint16_t
 	strcpy(esp01PROTO, "UDP");
 	udpIniciado      = 0;
 
+	// <<< AQUÍ copio la IP PASADA desde main.c >>>
+	strncpy(esp01RemoteIP, RemoteIP, sizeof(esp01RemoteIP)-1);
+	esp01RemoteIP[sizeof(esp01RemoteIP)-1] = '\0';
+
 	itoa(RemotePORT, esp01RemotePORT, 10);
 	itoa(LocalPORT, esp01LocalPORT, 10);
 
@@ -186,7 +192,7 @@ _eESP01STATUS ESP01_StartUDP(const char *RemoteIP, uint16_t RemotePORT, uint16_t
 	if(esp01Flags.bit.WIFICONNECTED == 0)
 		return ESP01_WIFI_DISCONNECTED;
 
-	esp01ATSate = ESP01ATCIPCLOSE;
+	esp01ATSate = ESP01ATPREPUDP;
 
 	return ESP01_UDPTCP_CONNECTING;
 }
@@ -400,11 +406,11 @@ static void ESP01ATDecode(){
 		value = esp01RXATBuf[esp01irRXAT];
 
 	    // DEBUG: muestro cada byte RX en hex
-	    if(aDbgStr){
+	    /*if(aDbgStr){
 	        char dbg[8];
 	        snprintf(dbg, sizeof(dbg), "%02X ", value);
 	        aDbgStr(dbg);
-	    }
+	    }*/
 
 
 		switch(esp01HState){
@@ -473,17 +479,18 @@ static void ESP01ATDecode(){
 		case 2:
 		    if(value == '\n'){
 		        esp01HState = 0;
-		        /*if (aDbgStr) {
+		        if (aDbgStr) {
 					char dbgBuf[64];
 					sprintf(dbgBuf, "DEBUG: RECIBI OK - estado actual = %d\n", esp01ATSate);
 					aDbgStr(dbgBuf);
-				}*/
+				}
 		        switch(indexResponse){
 		        case 0://AT
 		        case 1:
 		            break;
 		        case 2: // OK
 		            if(esp01ATSate == ESP01ATRESPONSE){
+		            	aDbgStr(">>> DEBUG: marcando ATRESPONSEOK = 1\n");
 		                esp01TimeoutTask = 0;
 		                esp01Flags.bit.ATRESPONSEOK = 1;
 		            }
@@ -801,6 +808,7 @@ static void ESP01DOConnection(){
 			esp01TriesAT = 4;
 
 		esp01Flags.bit.ATRESPONSEOK = 0;
+		aDbgStr(">>> Cambio de estado a ESP01ATAT: lanzando AT\n");
 		ESP01StrToBufTX(ATAT);
 		if(aDbgStr != NULL)
 			aDbgStr("+&DBGESP01AT\n");
@@ -813,13 +821,17 @@ static void ESP01DOConnection(){
 			esp01ATSate = ESP01ATAT;
 		break;
 	case ESP01ATCWMODE:
-	    // 1) modo SoftAP + Station
-	    ESP01StrToBufTX("AT+CWMODE=3\r\n");
-	    // 2) configuro el SoftAP: SSID="MiESP01", clave="miclave123", canal=5, WPA2
-	    ESP01StrToBufTX("AT+CWSAP=\"ESPTADEO\",\"TADEOPASS\",5,3\r\n");
-	    // 3) enciendo DHCP para el AP
-	    ESP01StrToBufTX("AT+CWDHCP=2,1\r\n");
-	    esp01ATSate = ESP01ATCIPMUX;
+		// 1) ponemos modo SoftAP+Station
+		ESP01StrToBufTX("AT+CWMODE=1\r\n");
+		// 2) activamos DHCP en Station (para que saque IP de tu router)
+		ESP01StrToBufTX("AT+CWDHCP=1,1\r\n");
+		// 3) nos asociamos al router
+		ESP01StrToBufTX(ATCWJAP);
+		ESP01ByteToBufTX('\"');  ESP01StrToBufTX(esp01SSID);    ESP01ByteToBufTX('\"');
+		ESP01ByteToBufTX(',');   ESP01ByteToBufTX('\"');       ESP01StrToBufTX(esp01PASSWORD);
+		ESP01ByteToBufTX('\"');  ESP01StrToBufTX("\r\n");
+		// 4) pasamos a esperar la respuesta de CWJAP
+		esp01ATSate = ESP01ATCWJAP;
 	    break;
 	case ESP01ATCIPMUX:
 	    if (strcmp(esp01PROTO, "TCP") == 0) {
@@ -837,7 +849,8 @@ static void ESP01DOConnection(){
 	    break;
 	case ESP01ATPREPUDP:
 	    ESP01StrToBufTX("AT+CIPSERVER=0\r\n");
-	    ESP01StrToBufTX("AT+CIPCLOSE=0\r\n");
+	    //ESP01StrToBufTX("AT+CIPCLOSE=0\r\n");
+	    ESP01StrToBufTX(ATCIPCLOSE);
 	    ESP01StrToBufTX("AT+CIPMUX=0\r\n");
 	    ESP01StrToBufTX("AT+CIPSTART=\"UDP\",\"");
 	    ESP01StrToBufTX(esp01RemoteIP);
@@ -1009,11 +1022,11 @@ static void ESP01SENDData(){
 }
 
 static void ESP01StrToBufTX(const char *str){
-	// DEBUG: muestro en consola todo lo que voy a enviar
+	/*// DEBUG: muestro en consola todo lo que voy a enviar
 	    if(aDbgStr){
 	        aDbgStr(">> TX: ");
 	        aDbgStr(str);
-	    }
+	    }*/
 
 	for(int i=0; str[i]; i++){
 		esp01TXATBuf[esp01iwTX++] = str[i];
@@ -1038,9 +1051,41 @@ void ESP01_USB_DbgStr(const char *dbgStr) {
 
 void onESP01StateChange(_eESP01STATUS state) {
     switch (state) {
+    	case ESP01_WIFI_CONNECTED:
+			// Cuando ya estamos en la red, arrancamos UDP (single-connection)
+			/*if (!udpIniciado && strcmp(esp01PROTO, "UDP") == 0) {
+				// 1) Aseguramos single-connection
+				ESP01StrToBufTX("AT+CIPMUX=0\r\n");
+				aDbgStr(">>> Forzando single-connection\r\n");
+
+				// 2) Abrimos socket UDP: AT+CIPSTART="UDP","<IP_REMOTA>",<PUERTO_REMOTO>,<PUERTO_LOCAL>,0
+				{
+					char cmd[64];
+					snprintf(cmd, sizeof(cmd),
+							 "AT+CIPSTART=\"UDP\",\"%s\",%d,%d,0\r\n",
+							 esp01RemoteIP,
+							 atoi(esp01RemotePORT),   // puerto remoto
+							 LOCAL_PORT               // tu puerto local
+					);
+					ESP01StrToBufTX(cmd);
+				}
+				aDbgStr(">>> Iniciando socket UDP\r\n");
+				udpIniciado = 1;
+			}*/
+			break;
+
         case ESP01_WIFI_NEW_IP:
-            // Sólo arrancar el servidor TCP la primera vez que recibimos IP
-            if (!tcpServerStarted && strcmp(esp01PROTO, "TCP") == 0) {
+        	if (state == ESP01_WIFI_NEW_IP) {
+        	  // Lanza aquí tu UDP (solo una vez)
+        	  ESP01_StartUDP("192.168.123.94", 30010, 30000);
+        	}
+        	else if (state == ESP01_UDPTCP_CONNECTED) {
+        	  // Ya puedes enviar datos
+        	  // por ejemplo: ESP01_Send(buf, ir, len, size);
+        	}
+
+        	// Sólo arrancar el servidor TCP la primera vez que recibimos IP
+            /*if (!tcpServerStarted && strcmp(esp01PROTO, "TCP") == 0) {
                 // Habilitar multiplexado y servidor en el ESP01
                 ESP01StrToBufTX("AT+CIPMUX=1\r\n");
                 {
@@ -1050,7 +1095,7 @@ void onESP01StateChange(_eESP01STATUS state) {
                 }
                 aDbgStr(">>> Servidor TCP arrancado\r\n");
                 tcpServerStarted = 1;
-            }
+            }*/
             break;
 
         case ESP01_UDPTCP_CONNECTED:

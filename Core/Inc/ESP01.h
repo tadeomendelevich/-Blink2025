@@ -66,6 +66,9 @@ typedef struct{
 	uint16_t			    sizeBufferRX;		  /**< Tamaño en bytes del buffer de recepción*/
 } _sESP01Handle;
 
+extern const char *wifiSSID;
+extern const char *wifiPassword;
+extern const char *wifiIp;
 
 /**
  * @brief ESP01_WIFI Configura y Conecta
