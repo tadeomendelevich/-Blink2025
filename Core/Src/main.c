@@ -42,6 +42,8 @@
 #define CH_PD_GPIO_Port  	GPIOA
 #define CH_PD_Pin        	GPIO_PIN_8
 
+#define UDP_RX_SIZE  	 	512
+#define UDP_RX_MASK   		(UDP_RX_SIZE - 1)
 #define USB_TX_BUF_SIZE 	256
 #define USB_TX_BUF_MASK 	(USB_TX_BUF_SIZE-1)
 
@@ -125,13 +127,13 @@ uint8_t *sendAllSensors;
 //const char *wifiPassword = "fcalconcordia.06-2019";
 //const char *wifiIp = "172.23.205.98";
 
-//const char *wifiSSID     = "MEGACABLE FIBRA-2.4G-ckd0";
-//const char *wifiPassword = "djg19dlk";
-//const char *wifiIp = "192.168.100.5";
+const char *wifiSSID     = "MEGACABLE FIBRA-2.4G-ckd0";
+const char *wifiPassword = "djg19dlk";
+const char *wifiIp = "192.168.100.5";
 
-const char *wifiSSID     = "Delco_Mendelevich";
-const char *wifiPassword = "toyotakia";
-const char *wifiIp = "192.168.123.94";
+//const char *wifiSSID     = "Delco_Mendelevich";
+//const char *wifiPassword = "toyotakia";
+//const char *wifiIp = "192.168.123.57";
 
 
 static int32_t ax_ema = 0, ay_ema = 0, az_ema = 0;
@@ -903,6 +905,9 @@ int main(void)
   motorRightVelocity = 0;
   motorLeftVelocity  = 0;
 
+  esp01IwRx = 0;
+  esp01IrRx = 0;
+
   HAL_Delay(2000);
   /* USER CODE END 2 */
 
@@ -918,11 +923,6 @@ int main(void)
 
 		  ESP01_Timeout10ms();  	// Requerido por la librería ESP01
 		  ESP01_Task(); 	// Procesa tramas ESP01 recibidas
-		  UNER_Task(); 		// Procesa tramas UNER recibidas
-
-		  if (unerTx.indexR != unerTx.indexW) {
-		      UNER_SendSerial(&unerTx);
-		  }
 
 		  tmo100ms--;
 		  if (tmo100ms == 0) {
@@ -1007,45 +1007,22 @@ int main(void)
 		  }
 	  }
 
+	  while ((esp01IwRx - esp01IrRx) & UDP_RX_MASK) {
+	      uint8_t b = esp01RxBuf[esp01IrRx];
+	      esp01IrRx = (esp01IrRx + 1) & UDP_RX_MASK;
+
+	      // DEBUG: mostrar en USB cada byte recibido
+	      char dbg[6];
+	      snprintf(dbg, sizeof(dbg), "%02X ", b);
+	      USB_DebugStr(dbg);
+
+	      UNER_PushByte(b);
+	  }
+
+	  UNER_Task(); 		// Procesa tramas UNER recibidas
+
 	  usb_service_tx();
-
 	  SSD1306_UpdateScreen();
-
-	  while (esp01IrRx != esp01IwRx) {
-		  uint8_t b = esp01RxBuf[esp01IrRx++];
-		  esp01IrRx &= (ESP01RXBUFAT - 1);   // wrap-around
-		  UNER_PushByte(b);                  // turn5file2: UNER_PushByte guarda en unerRx->buff[]
-	  }
-
-	  if (ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED
-	      && !ESP01_IsSending()) {
-	    // 1) calcula cuántos bytes tienes pendientes
-	    uint16_t len = (unerTx.indexW + TXBUFSIZE
-	                    - unerTx.indexR) & unerTx.mask;
-	    if (len) {
-	      USB_Debug(">> Enviando %u bytes por UDP...\r\n", len);
-	      // 2) envía directamente desde el ring-buffer de UNER
-
-	      uint16_t length = (unerTx.indexW + TXBUFSIZE - unerTx.indexR) & unerTx.mask; // Esto calcula la longitud de los datos en el buffer
-	      USB_Debug("Buffer contents: ");
-	      for (int i = 0; i < length; i++) {
-	          USB_DebugHex(unerTx.buff[unerTx.indexR + i]); // Esto imprimirá cada byte
-	      }
-	      USB_Debug("\r\n");
-
-
-	      if (ESP01_Send(unerTx.buff,
-	                     unerTx.indexR,
-	                     len,
-	                     TXBUFSIZE)
-	          == ESP01_SEND_READY) {
-	        // 3) sólo avanza el índice si arrancó el envío
-	        unerTx.indexR = (unerTx.indexR + len)
-	                         & unerTx.mask;
-	      }
-	    }
-	  }
-
 
 	  if (dataTx) {
 	      HAL_UART_Transmit(&huart1, &dataTx, 1, 100);

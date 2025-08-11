@@ -141,5 +141,7 @@ void UNER_RegisterMotorSpeed(int16_t *rightPtr, int16_t *leftPtr);
 
 void UNER_RegisterAngle(int16_t *rollPtr, int16_t *pitchPtr);
 
+void UNER_SendData(void);
+
 
 #endif /* ESP01_H_ */

@@ -9,6 +9,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <stdlib.h>
+#include "ESP01.h"
 
 #include <stdarg.h>       // para va_list, va_start, va_end
 #include "usbd_cdc_if.h"  // para CDC_Transmit_FS
@@ -230,14 +231,19 @@ void decodeCommand(_sRx *dataRx, _sTx *dataTx)
 {
     switch(dataRx->buff[dataRx->indexData]){
         case ALIVE:
+        	USB_Debug("\n ALIVE RECIBIDOOOO\n");
             putHeaderOnTx(dataTx, ALIVE, 2);
             putByteOnTx(dataTx, ACK);
             putByteOnTx(dataTx, dataTx->chk);
+
+            UNER_SendData();
         break;
         case FIRMWARE:
             putHeaderOnTx(dataTx, FIRMWARE, 12);
             putStrOntx(dataTx, firmware);
             putByteOnTx(dataTx, dataTx->chk);
+
+            UNER_SendData();
         break;
         case GETADCVALUES:
         	putHeaderOnTx(dataTx, GETADCVALUES, 17);
@@ -268,6 +274,8 @@ void decodeCommand(_sRx *dataRx, _sTx *dataTx)
 			putByteOnTx(dataTx, myWord.ui8[1] );
 
 			putByteOnTx(dataTx, dataTx->chk);
+
+			UNER_SendData();
         	break;
         case GETMPU6050VALUES:
         	putHeaderOnTx(dataTx, GETMPU6050VALUES, 13);
@@ -293,6 +301,8 @@ void decodeCommand(_sRx *dataRx, _sTx *dataTx)
 			putByteOnTx(dataTx, myWord.ui8[1] );
 
 			putByteOnTx(dataTx, dataTx->chk);
+
+			UNER_SendData();
         	break;
         case GETANGLE:
         	if (p_roll && p_pitch) {
@@ -306,11 +316,15 @@ void decodeCommand(_sRx *dataRx, _sTx *dataTx)
 				putByteOnTx(dataTx, myWord.ui8[1] );
 
 				putByteOnTx(dataTx, dataTx->chk);
+
+				UNER_SendData();
 			} else {
 				// si no está registrado, devolvemos sólo ACK
 				putHeaderOnTx(dataTx, GETANGLE, 2);
 				putByteOnTx(dataTx, ACK);
 				putByteOnTx(dataTx, dataTx->chk);
+
+				UNER_SendData();
 			}
         	break;
         case SETMOTORSPEED:
@@ -396,11 +410,14 @@ void decodeCommand(_sRx *dataRx, _sTx *dataTx)
 
 			putByteOnTx(dataTx, unerTx->chk);
 
+			UNER_SendData();
         	break;
         default:
             putHeaderOnTx(dataTx, (_eCmd)dataRx->buff[dataRx->indexData], 2);
             putByteOnTx(dataTx,UNKNOWN );
             putByteOnTx(dataTx, dataTx->chk);
+
+            UNER_SendData();
         break;
     }
 }
@@ -421,21 +438,11 @@ void UNER_SendAlive(void) {
         return;
     }
 
-    USB_DebugStr(">>> UNER_SendAlive llamado\n");
-
-    unerTx->indexW = 0;
-    unerTx->indexR = 0;
-    unerTx->chk    = 0;
-
     putHeaderOnTx(unerTx, ALIVE, 2);
     putByteOnTx(unerTx, ACK);
     putByteOnTx(unerTx, unerTx->chk);
 
-    ESP01_Send(unerTx->buff, 0,  unerTx->indexW, TXBUFSIZE);
-
-    if (hUsbDeviceFS.dev_state == USBD_STATE_CONFIGURED) {
-        usb_enqueue_tx(unerTx->buff, unerTx->indexW);
-    }
+    UNER_SendData();
 }
 
 void UNER_SendAllSensors(void) {
@@ -502,10 +509,7 @@ void UNER_SendAllSensors(void) {
 
 	putByteOnTx(unerTx, unerTx->chk);
 
-	ESP01_Send(unerTx->buff, 0,  unerTx->indexW, TXBUFSIZE);
-	if (hUsbDeviceFS.dev_state == USBD_STATE_CONFIGURED) {
-	    usb_enqueue_tx(unerTx->buff, unerTx->indexW);
-	}
+	UNER_SendData();
 }
 
 uint8_t UNER_ShouldSendAllSensors(void) {
@@ -543,6 +547,25 @@ void UNER_RegisterAngle(int16_t *rollPtr, int16_t *pitchPtr)
 {
     p_roll  = rollPtr;
     p_pitch = pitchPtr;
+}
+
+// Envía el ring-buffer por USB y por UDP
+void UNER_SendData(void) {
+    uint16_t len = (unerTx->indexW + unerTx->mask + 1 - unerTx->indexR) & unerTx->mask;
+    if (!len) return;
+
+    // USB CDC
+    if (hUsbDeviceFS.dev_state == USBD_STATE_CONFIGURED) {
+        usb_enqueue_tx(&unerTx->buff[unerTx->indexR], len);
+    }
+
+    // UDP (ESP01)
+    if (ESP01_StateUDPTCP() == ESP01_UDPTCP_CONNECTED && !ESP01_IsSending()) {
+        ESP01_Send(unerTx->buff, unerTx->indexR, len, TXBUFSIZE);
+    }
+
+    // Avanzar índice de lectura
+    unerTx->indexR = (unerTx->indexR + len) & unerTx->mask;
 }
 
 /* END Private Functions*/

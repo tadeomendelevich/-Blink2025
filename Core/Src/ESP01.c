@@ -11,13 +11,16 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include "stm32f1xx_hal.h"
+#include "UNER.h"
 
-//#define SERVER_IP    "172.23.205.98"	// Facultad
-//#define SERVER_IP 	 "192.168.100.5"	// Departamento concordia
-#define SERVER_IP 	 "192.168.123.94"	// Casa Clara
-#define SERVER_PORT  30010
-#define LOCAL_PORT   30000
-#define ALIVE_INTERVAL_MS 3000
+extern void USB_Debug(const char *fmt, ...);
+
+//#define SERVER_IP    		"172.23.205.98"	// Facultad
+#define SERVER_IP 	 	"192.168.100.5"	// Departamento concordia
+//#define SERVER_IP 	 		"192.168.123.57"	// Casa Clara
+#define SERVER_PORT  		30010
+#define LOCAL_PORT   		30000
+#define ALIVE_INTERVAL_MS 	5000
 
 static enum {
 	ESP01ATIDLE,
@@ -136,7 +139,7 @@ static uint8_t tryingTCP = 0;
 static uint8_t waitingForTCPClient = 0;
 static uint16_t lastIPDlen = 0;  // guarda la longitud del +IPD
 
-static uint8_t tcpServerStarted = 0;
+//static uint8_t tcpServerStarted = 0;
 static uint8_t configUDPObtenida = 0;
 static uint8_t udpIniciado = 0;
 static uint32_t lastAliveTick = 0;
@@ -361,16 +364,16 @@ void ESP01_Task(){
 
 	// ——— Alive periódico UDP ———
 	if (strcmp(esp01PROTO, "UDP")==0 && esp01Flags.bit.UDPTCPCONNECTED) {
-		uint32_t now = HAL_GetTick();
-		if ((now - lastAliveTick) >= ALIVE_INTERVAL_MS) {
-			// sólo enviamos si no estamos ya en medio de un envío
-			if (!esp01Flags.bit.SENDINGDATA) {
-				lastAliveTick = now;
-				const char heartbeat[] = "HOLA\r\n";  // nuevo mensaje
-				ESP01_Send((uint8_t*)heartbeat, 0, sizeof(heartbeat)-1, sizeof(heartbeat)-1);
-				aDbgStr(">>> Heartbeat UDP enviado\r\n");
-			}
-		}
+	    uint32_t now = HAL_GetTick();
+	    if ((now - lastAliveTick) >= ALIVE_INTERVAL_MS) {
+	        // sólo enviamos si no estamos ya en medio de un envío
+	        // y si no hay bytes +IPD pendientes de procesar
+	        if (!esp01Flags.bit.SENDINGDATA
+	            && esp01irRXAT == esp01iwRXAT) {
+	            lastAliveTick = now;
+	            UNER_SendAlive();
+	        }
+	    }
 	}
 }
 
@@ -389,12 +392,14 @@ int ESP01_IsHDRRST(){
 }
 
 
-
-
 /* Private Functions */
 static void ESP01ATDecode(){
 	uint16_t i;
 	uint8_t value;
+
+
+	static uint16_t recibidos;
+
 
 	if(esp01ATSate==ESP01ATHARDRST0 || esp01ATSate==ESP01ATHARDRST1 ||
 	   esp01ATSate==ESP01ATHARDRSTSTOP){
@@ -611,46 +616,54 @@ static void ESP01ATDecode(){
 			}
 			break;
 		case 10:  // acabamos de detectar "+IPD"
-		    if (value == ',') {
-		        esp01HState = 11;   // pasamos al estado de saltar linkId
-		    }
-		    // si no es coma, seguimos aquí (descartamos cualquier otro carácter)
+		    esp01HState   = 11;    // pasamos a parsear longitud (y saltar linkId si existe)
+		    esp01nBytes   = 0;     // reiniciar contador de longitud
+		    recibidos     = 0;     // reiniciar contador de payload (para debug)
 		    break;
 
-		case 11:  // salto el linkId hasta encontrar la siguiente coma
+		case 11:  // salto opcional de linkId y parseo de longitud hasta ':'
 		    if (value == ',') {
-		        esp01HState = 12;   // ahora viene el número de bytes
-		        esp01nBytes = 0;    // reinicio contador para la longitud
+		        // si es la primera coma, puede ser el separador linkId→longitud o linkId único
+		        // simplemente ignoramos y seguimos aquí
 		    }
-		    break;
-
-		case 12:  // parseo la longitud hasta encontrar ':'
-		    if (value >= '0' && value <= '9') {
+		    else if (value >= '0' && value <= '9') {
+		        // acumulamos dígito de longitud
 		        esp01nBytes = esp01nBytes * 10 + (value - '0');
 		    }
 		    else if (value == ':') {
-		        lastIPDlen = esp01nBytes;  // guardo la longitud definitiva
-		        esp01HState = 13;          // pasamos a leer los datos
+		        // fin del número de bytes, arrancamos la lectura de payload
+		        lastIPDlen  = esp01nBytes;
+		        esp01HState = 12;
 		    }
 		    else {
-		        // si hay algo inesperado, reseteo
+		        // cualquier otro carácter inesperado nos saca al estado base
 		        esp01HState = 0;
 		    }
 		    break;
-		case 13:  // aquí recibo byte a byte el payload TCP
-		    // lo almaceno en el buffer circular
+
+		case 12:  // leemos byte a byte el payload
+		    // 1) lo metemos en el buffer circular
 		    esp01Handle.bufRX[*esp01Handle.iwRX] = value;
 		    (*esp01Handle.iwRX)++;
 		    if (*esp01Handle.iwRX == esp01Handle.sizeBufferRX)
 		        *esp01Handle.iwRX = 0;
 
-		    // decrementamos el contador
+		    // 2) Debug al inicio del payload
+		    if (recibidos == 0) {
+		        USB_Debug(">> +IPD payload begin, len=%u\r\n", esp01nBytes);
+		    }
+		    recibidos++;
+
+		    // 3) decrementamos contador
 		    esp01nBytes--;
 		    if (esp01nBytes == 0) {
-		        // ya se leyó todo, volvemos al estado base
+		        // fin de payload:
 		        esp01HState = 0;
+		        esp01Flags.bit.WAITINGSYMBOL = 0;
+		        esp01Flags.bit.TXCIPSEND     = 0;
+		        esp01Flags.bit.SENDINGDATA   = 0;
 
-		        // imprimimos en debug los lastIPDlen bytes
+		        // 4) imprimimos en debug los lastIPDlen bytes recibidos
 		        uint16_t start = (*esp01Handle.iwRX + esp01Handle.sizeBufferRX - lastIPDlen)
 		                         % esp01Handle.sizeBufferRX;
 		        for (uint16_t i = 0; i < lastIPDlen; ++i) {
@@ -660,66 +673,57 @@ static void ESP01ATDecode(){
 		        }
 		        if (aDbgStr) aDbgStr("\r\n");
 
-		        // sólo procesamos la trama de configuración una vez
+		        // 5) si viene la trama de configuración UDP, la procesamos sólo una vez
 		        if (!configUDPObtenida) {
-		            // 1) copiamos a un buffer temporal y cerramos con '\0'
+		            // extraemos la cadena completa
 		            char cmd[lastIPDlen + 1];
 		            for (uint16_t i = 0; i < lastIPDlen; ++i) {
 		                cmd[i] = esp01Handle.bufRX[(start + i) % esp01Handle.sizeBufferRX];
 		            }
 		            cmd[lastIPDlen] = '\0';
 
-			        // 2) Tokenizamos por comas
-			        char *p = strtok(cmd, ",");
-			        if (!p) return;  // error de formato
+		            // tokenizamos por comas: SSID,PASS,REMOTE_IP,REMOTE_PORT
+		            char *p = strtok(cmd, ",");
+		            if (p) {
+		                // SSID
+		                strncpy(esp01SSID, p, sizeof(esp01SSID) - 1);
+		                esp01SSID[sizeof(esp01SSID) - 1] = '\0';
 
-			        // SSID
-			        strncpy(esp01SSID, p, sizeof(esp01SSID) - 1);
-			        esp01SSID[sizeof(esp01SSID) - 1] = '\0';
+		                // PASSWORD
+		                p = strtok(NULL, ",");
+		                if (!p) break;
+		                strncpy(esp01PASSWORD, p, sizeof(esp01PASSWORD) - 1);
+		                esp01PASSWORD[sizeof(esp01PASSWORD) - 1] = '\0';
 
-			        // PASSWORD
-			        p = strtok(NULL, ",");
-			        if (!p) return;
-			        strncpy(esp01PASSWORD, p, sizeof(esp01PASSWORD) - 1);
-			        esp01PASSWORD[sizeof(esp01PASSWORD) - 1] = '\0';
+		                // REMOTE_IP
+		                p = strtok(NULL, ",");
+		                if (!p) break;
+		                strncpy(esp01RemoteIP, p, sizeof(esp01RemoteIP) - 1);
+		                esp01RemoteIP[sizeof(esp01RemoteIP) - 1] = '\0';
 
-			        // REMOTE_IP
-			        p = strtok(NULL, ",");
-			        if (!p) return;
-			        strncpy(esp01RemoteIP, p, sizeof(esp01RemoteIP) - 1);
-			        esp01RemoteIP[sizeof(esp01RemoteIP) - 1] = '\0';
+		                // REMOTE_PORT
+		                p = strtok(NULL, ",");
+		                if (!p) break;
+		                uint16_t port = atoi(p);
 
-			        // REMOTE_PORT
-			        p = strtok(NULL, ",");
-			        if (!p) return;
-			        uint16_t port = atoi(p);
+		                // debug
+		                aDbgStr("Configuracion recibida:\n");
+		                aDbgStr("  SSID: ");     aDbgStr(esp01SSID);    aDbgStr("\n");
+		                aDbgStr("  PASS: ");     aDbgStr(esp01PASSWORD);aDbgStr("\n");
+		                aDbgStr("  IP:   ");     aDbgStr(esp01RemoteIP); aDbgStr("\n");
+		                aDbgStr("  PORT: ");     { char buf[6]; itoa(port,buf,10); aDbgStr(buf); } aDbgStr("\n");
 
-			        // ———> Aquí imprimimos lo recibido <———
-			        aDbgStr("Configuracion recibida:\n");
-			        aDbgStr("SSID: ");       aDbgStr(esp01SSID);    aDbgStr("\n");
-			        aDbgStr("PASSWORD: ");   aDbgStr(esp01PASSWORD);aDbgStr("\n");
-			        aDbgStr("REMOTE IP: ");  aDbgStr(esp01RemoteIP); aDbgStr("\n");
-			        aDbgStr("REMOTE PORT: ");{ char buf[6]; itoa(port, buf, 10); aDbgStr(buf);} aDbgStr("\n");
-
-			        // 3) arrancamos UDP con los nuevos parámetros
-			        ESP01_StartUDP(esp01RemoteIP, port, LOCAL_PORT);
-			        configUDPObtenida = 1;
-			        esp01ATSate      = ESP01ATCIPMUX;   // para que el FSM salte directo al PREPUDP
-
-			        // Forzamos que en la próxima ESP01_Task() entre directo en DOConnection()
-			        esp01TimeoutTask = 0;
-
-			        // ———> Y volvemos a reimprimir tras lanzar el UDP <———
-			        aDbgStr("Lanzando UDP con:\n");
-			        aDbgStr("SSID: ");       aDbgStr(esp01SSID);    aDbgStr("\n");
-			        aDbgStr("PASSWORD: ");   aDbgStr(esp01PASSWORD);aDbgStr("\n");
-			        aDbgStr("REMOTE IP: ");  aDbgStr(esp01RemoteIP); aDbgStr("\n");
-			        aDbgStr("REMOTE PORT: ");{ char buf2[6]; itoa(port, buf2, 10); aDbgStr(buf2);} aDbgStr("\n");
-
+		                // arrancamos UDP con nuevos parámetros
+		                ESP01_StartUDP(esp01RemoteIP, port, LOCAL_PORT);
+		                configUDPObtenida = 1;
+		                // forzamos que en el próximo Task() vaya directo a DOConnection()
+		                esp01ATSate     = ESP01ATCIPMUX;
+		                esp01TimeoutTask = 0;
+		            }
 		        }
-		        // si ya tenía configUDPObtenida == 1, simplemente ignoramos este IPD
 		    }
 		    break;
+
 		default:
 			esp01HState = 0;
 			esp01TimeoutDataRx = 0;
@@ -1095,7 +1099,7 @@ void onESP01StateChange(_eESP01STATUS state) {
         case ESP01_WIFI_NEW_IP:
         	if (state == ESP01_WIFI_NEW_IP) {
         	  // Lanza aquí tu UDP (solo una vez)
-        	  ESP01_StartUDP("192.168.123.94", 30010, 30000);
+        	  ESP01_StartUDP(SERVER_IP, 30010, 30000);
         	}
         	else if (state == ESP01_UDPTCP_CONNECTED) {
         	  // Ya puedes enviar datos
@@ -1121,7 +1125,7 @@ void onESP01StateChange(_eESP01STATUS state) {
         	if (!udpIniciado && strcmp(esp01PROTO, "UDP")==0) {
 				udpIniciado = 1;           // impide re-entradas
 				ESP01_USB_DbgStr(">>> UDP conectado OK\r\n");
-				//UNER_SendAlive();
+				UNER_SendAlive();
 
 				ESP01StrToBufTX("AT+CIPSTATUS\r\n");
 
