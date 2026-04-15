@@ -116,7 +116,7 @@ Core/Src/
 
 <div align="center">
 
-**Tadeo Mendelevich** · Ingeniería en Sistemas · UNER — Concordia, Entre Ríos
+**Tadeo Mendelevich** · Ingeniería en Mecatrónica · UNER — Concordia, Entre Ríos
 
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-Conectar-0A66C2?style=flat&logo=linkedin)](https://www.linkedin.com/in/tadeo-mendelevich/)
 [![GitHub](https://img.shields.io/badge/GitHub-tadeomendelevich-181717?style=flat&logo=github)](https://github.com/tadeomendelevich)
