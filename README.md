@@ -87,5 +87,5 @@ Core/Src/
 
 **Tadeo Mendelevich** — Estudiante de Ingeniería en Sistemas, UNER  
 
-[![LinkedIn](https://www.linkedin.com/in/tadeo-mendelevich/)
-[![GitHub](https://github.com/tadeomendelevich)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-Conectar-0A66C2?style=flat&logo=linkedin)]([https://linkedin.com/in/tu-perfil](https://www.linkedin.com/in/tadeo-mendelevich/))
+[![GitHub](https://img.shields.io/badge/GitHub-Seguir-181717?style=flat&logo=github)]([https://github.com/tu-usuario](https://github.com/tadeomendelevich))
