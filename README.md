@@ -27,6 +27,14 @@
 
 Sistema embebido corriendo sobre un STM32F103 a 72 MHz. Todo ocurre dentro de un **loop determinístico de 10 ms**, sin sistema operativo y sin bloqueos:
 
+<div align="center">
+
+### 🔧 Build sobre Bluepill
+
+<img src="bluepill.png" alt="Build Bluepill" width="600"/>
+
+</div>
+
 | Módulo | Descripción |
 |--------|-------------|
 | 🔵 **MPU6050** | Lee acelerómetro + giroscopio por DMA no bloqueante, convierte a unidades físicas con punto fijo, y se auto-calibra con 500 muestras al arranque |
